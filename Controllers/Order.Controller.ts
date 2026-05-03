@@ -51,6 +51,7 @@ export const getOrdersController = async (req: Request, res: Response): Promise<
 
 export const getVendorOrdersController = async (req: Request, res: Response): Promise<Response> => {
     const authUser = (req as any).user;
+    console.log("Authenticated user in getVendorOrdersController:", authUser);  
     if (!authUser?.userId || !authUser?.role) {
         return res.status(401).json({ message: "Unauthorized" });
     }

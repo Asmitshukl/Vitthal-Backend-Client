@@ -104,10 +104,10 @@ export async function registerUser(req: Request, res: Response): Promise<Respons
 
 
 export async function loginUser(req: Request, res: Response): Promise<Response> {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
 
-    if (!email || !password ) {
-        return res.status(400).json({ message: 'Email and password are required' });
+    if (!email || !password || !role) {
+        return res.status(400).json({ message: 'Email, password, and role are required' });
     }
 
     try {
@@ -118,6 +118,9 @@ export async function loginUser(req: Request, res: Response): Promise<Response> 
         if (!user) {
             return res.status(401).json({ message: 'Invalid email' });
         }
+
+        if(user.role != role)
+            return res.status(401).json({ message: `This email is associated with ${user.role} and you are trying to log in as ${role}! That is not allowed.` });
 
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
@@ -134,15 +137,16 @@ export async function loginUser(req: Request, res: Response): Promise<Response> 
         // Store refresh token in database for revocation and session tracking
         await pool.query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.id]);
 
-        res.cookie('refreshToken', refreshToken, {
+        res.cookie(`${user.role}RefreshToken`, refreshToken, {
             ...COOKIE_OPTIONS,
             maxAge: 45 * 24 * 60 * 60 * 1000, // 45 days
         });
 
-        res.cookie('accessToken', accessToken, {
+        res.cookie(`${user.role}AccessToken`, accessToken, {
             ...COOKIE_OPTIONS,
             maxAge: 30 * 60 * 1000, // 30 minutes
         });
+
 
         return res.status(200).json({ message: 'Login successful', user: { userId: user.id, username: user.name, email: user.email, role: user.role } });
 
@@ -162,22 +166,24 @@ export async function getCurrentUser(req: Request, res: Response): Promise<Respo
 }
 
 export async function logoutUser(req: Request, res: Response): Promise<Response> {
-    const refreshToken = req.cookies.refreshToken;
+    const isRequestFrom = req.headers['x-request-from'] || '';
+    const refreshToken = req.cookies[`${isRequestFrom}RefreshToken`];
+    
     if (!refreshToken) {
         return res.status(400).json({ message: 'Refresh token is required' });
     }
-
     try {
         const isVerified = verifyToken(refreshToken, 'refresh');
         if (!isVerified) {
             return res.status(401).json({ message: 'Invalid refresh token' });
         }
 
-        // Clear refresh token from database
-        await pool.query('UPDATE users SET refresh_token = NULL WHERE refresh_token = $1', [refreshToken]);
+        // Clear refresh token from database and get the role so that we can clear the correct cookies
+        const result = await pool.query('UPDATE users SET refresh_token = NULL WHERE refresh_token = $1 RETURNING role', [refreshToken]);
+        const userRole = result.rows[0]?.role;
 
-        res.clearCookie('refreshToken', COOKIE_OPTIONS);
-        res.clearCookie('accessToken', COOKIE_OPTIONS);
+        res.clearCookie(`${userRole}RefreshToken`, COOKIE_OPTIONS);
+        res.clearCookie(`${userRole}AccessToken`, COOKIE_OPTIONS);
 
         return res.status(200).json({ message: 'Logout successful' });
     }
@@ -352,15 +358,16 @@ export const verifyRegisteredUser = async (req: Request, res: Response): Promise
         const accessToken = generateAccessToken(user.id, user.name, user.email, user.role);
 
         // Store refresh token in database
-        await pool.query('UPDATE users SET refresh_token = $1 WHERE id = $2', [refreshToken, user.id]);
+        const tokenResult = await pool.query('UPDATE users SET refresh_token = $1 WHERE id = $2 RETURNING role', [refreshToken, user.id]);
+        const userRole = tokenResult.rows[0]?.role;
 
         // Set cookies
-        res.cookie('refreshToken', refreshToken, {
+        res.cookie(`${userRole}RefreshToken`, refreshToken, {
             ...COOKIE_OPTIONS,
             maxAge: 45 * 24 * 60 * 60 * 1000, // 45 days
         });
 
-        res.cookie('accessToken', accessToken, {
+        res.cookie(`${userRole}AccessToken`, accessToken, {
             ...COOKIE_OPTIONS,
             maxAge: 30 * 60 * 1000, // 30 minutes
         });

@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { addVendorController, createVendorAddress, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, checkVendorSetupStatus } from "../Controllers/Vendors.Controller";
+import { addVendorController, createVendorAddress, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, checkVendorSetupStatus, completeVendorSetupController } from "../Controllers/Vendors.Controller";
 import { getVendorDashboardController, getVendorAnalyticsController } from "../Controllers/VendorDashboard.Controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
@@ -9,6 +9,7 @@ const vendorsRouter = Router();
 vendorsRouter.use(authMiddleware);
 
 vendorsRouter.post("/createVendor", addVendorController);
+vendorsRouter.post("/completeSetup", completeVendorSetupController);
 vendorsRouter.put("/updateVendorBasicDetails", updateVendorBasicDetailsController);
 vendorsRouter.post("/createVendorAddress", createVendorAddress);
 vendorsRouter.put("/updateVendorAddress", updateVendorAddress);

@@ -68,8 +68,15 @@ export async function ensureMarketplaceSchema() {
         ALTER TABLE vendors
             ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
             ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending',
             ADD COLUMN IF NOT EXISTS approval_notes TEXT,
+            ADD COLUMN IF NOT EXISTS gst_certificate_link TEXT,
+            ADD COLUMN IF NOT EXISTS business_type TEXT,
+            ADD COLUMN IF NOT EXISTS company_website TEXT,
+            ADD COLUMN IF NOT EXISTS alternative_number TEXT,
+            ADD COLUMN IF NOT EXISTS designation TEXT,
+            ADD COLUMN IF NOT EXISTS business_description TEXT,
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 

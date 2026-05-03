@@ -9,6 +9,11 @@ function isMissingCoordinate(value: unknown) {
     return value === null || value === undefined || value === "";
 }
 
+function parseCoordinate(value: unknown) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 export const addVendorController = async (req: Request, res: Response): Promise<Response> => {
     const { companyName, phone, gstNumber } = req.body;
     const { userId } = (req as any).user;
@@ -282,6 +287,193 @@ export const updateVendorAddress = async (req: Request, res: Response): Promise<
     }
 }
 
+export const completeVendorSetupController = async (req: Request, res: Response): Promise<Response> => {
+    const {
+        companyName,
+        businessType,
+        gstNumber,
+        companyWebsite,
+        gstCertificateLink,
+        phone,
+        alternativeNumber,
+        designation,
+        businessDescription,
+        address,
+        city,
+        state,
+        country,
+        pincode,
+        latitude,
+        longitude
+    } = req.body;
+
+    const { userId, role } = (req as any).user;
+
+    const normalizedCompanyName = normalizeRequiredText(companyName);
+    const normalizedBusinessType = normalizeRequiredText(businessType);
+    const normalizedGstNumber = normalizeRequiredText(gstNumber);
+    const normalizedCompanyWebsite = normalizeRequiredText(companyWebsite);
+    const normalizedGstCertificateLink = normalizeRequiredText(gstCertificateLink);
+    const normalizedPhone = normalizeRequiredText(phone);
+    const normalizedAlternativeNumber = normalizeRequiredText(alternativeNumber);
+    const normalizedDesignation = normalizeRequiredText(designation);
+    const normalizedBusinessDescription = normalizeRequiredText(businessDescription);
+    const normalizedAddress = normalizeRequiredText(address);
+    const normalizedCity = normalizeRequiredText(city);
+    const normalizedState = normalizeRequiredText(state);
+    const normalizedCountry = normalizeRequiredText(country);
+    const normalizedPincode = normalizeRequiredText(pincode);
+
+    const parsedLatitude = parseCoordinate(latitude);
+    const parsedLongitude = parseCoordinate(longitude);
+
+    if (
+        !userId ||
+        role !== "vendor" ||
+        !normalizedCompanyName ||
+        !normalizedBusinessType ||
+        !normalizedGstNumber ||
+        !normalizedPhone ||
+        !normalizedDesignation ||
+        !normalizedBusinessDescription ||
+        !normalizedAddress ||
+        !normalizedCity ||
+        !normalizedState ||
+        !normalizedCountry ||
+        !normalizedPincode ||
+        parsedLatitude === null ||
+        parsedLongitude === null
+    ) {
+        return res.status(400).json({ message: "Missing or invalid required fields." });
+    }
+
+    if (!/^\d{6}$/.test(normalizedPincode)) {
+        return res.status(400).json({ message: "Pincode must be 6 digits." });
+    }
+
+    if (parsedLatitude < -90 || parsedLatitude > 90 || parsedLongitude < -180 || parsedLongitude > 180) {
+        return res.status(400).json({ message: "Latitude/longitude out of range." });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        await client.query(
+            `UPDATE users SET role = 'vendor', updated_at = NOW() WHERE id = $1`,
+            [userId]
+        );
+
+        const duplicateGst = await client.query(
+            `
+                SELECT user_id
+                FROM vendors
+                WHERE gst_number = $1 AND user_id <> $2
+            `,
+            [normalizedGstNumber, userId]
+        );
+
+        if (duplicateGst.rows.length > 0) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ message: "This GST number is already registered with another vendor." });
+        }
+
+        const vendorResult = await client.query(
+            `
+                INSERT INTO vendors (
+                    user_id,
+                    company_name,
+                    gst_number,
+                    gst_certificate_link,
+                    business_type,
+                    company_website,
+                    phone,
+                    alternative_number,
+                    designation,
+                    business_description,
+                    approval_status,
+                    approval_notes,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9, $10, 'pending', 'Awaiting admin approval', NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    company_name = EXCLUDED.company_name,
+                    gst_number = EXCLUDED.gst_number,
+                    gst_certificate_link = EXCLUDED.gst_certificate_link,
+                    business_type = EXCLUDED.business_type,
+                    company_website = EXCLUDED.company_website,
+                    phone = EXCLUDED.phone,
+                    alternative_number = EXCLUDED.alternative_number,
+                    designation = EXCLUDED.designation,
+                    business_description = EXCLUDED.business_description,
+                    updated_at = NOW()
+                RETURNING id, user_id, company_name, gst_number, gst_certificate_link, business_type, company_website, phone, alternative_number, designation, business_description, approval_status
+            `,
+            [
+                userId,
+                normalizedCompanyName,
+                normalizedGstNumber,
+                normalizedGstCertificateLink,
+                normalizedBusinessType,
+                normalizedCompanyWebsite,
+                normalizedPhone,
+                normalizedAlternativeNumber,
+                normalizedDesignation,
+                normalizedBusinessDescription
+            ]
+        );
+
+        const addressResult = await client.query(
+            `
+                INSERT INTO addresses (user_id, address, city, state, country, pincode, latitude, longitude, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    address = EXCLUDED.address,
+                    city = EXCLUDED.city,
+                    state = EXCLUDED.state,
+                    country = EXCLUDED.country,
+                    pincode = EXCLUDED.pincode,
+                    latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    updated_at = NOW()
+                RETURNING id, user_id, address, city, state, country, pincode, latitude, longitude
+            `,
+            [
+                userId,
+                normalizedAddress,
+                normalizedCity,
+                normalizedState,
+                normalizedCountry,
+                normalizedPincode,
+                parsedLatitude,
+                parsedLongitude
+            ]
+        );
+
+        await client.query("COMMIT");
+
+        return res.status(200).json({
+            message: "Vendor setup completed successfully!",
+            vendor: vendorResult.rows[0],
+            address: addressResult.rows[0]
+        });
+    }
+    catch (e) {
+        await client.query("ROLLBACK");
+        console.error("Error occurred while completing vendor setup:", e);
+        if ((e as { code?: string }).code === "23505") {
+            return res.status(409).json({ message: "Duplicate data conflict while saving setup." });
+        }
+        return res.status(500).json({ message: "Error occurred while completing vendor setup." });
+    }
+    finally {
+        client.release();
+    }
+}
+
 export const getVendorDetailsController = async (req: Request, res: Response): Promise<Response> => {
     const { userId, role } = (req as any).user;
     if (!userId) {
@@ -302,6 +494,13 @@ export const getVendorDetailsController = async (req: Request, res: Response): P
                 v.phone as vendor_phone,
                 v.company_name as vendor_company_name,
                 v.gst_number as vendor_gst_number,
+                v.gst_certificate_link as vendor_gst_certificate_link,
+                v.business_type as vendor_business_type,
+                v.company_website as vendor_company_website,
+                v.alternative_number as vendor_alternative_number,
+                v.designation as vendor_designation,
+                v.business_description as vendor_business_description,
+                v.is_approved as vendor_is_approved,
                 v.approval_status as vendor_approval_status,
                 v.approval_notes as vendor_approval_notes,
                 v.is_blocked as vendor_is_blocked,
