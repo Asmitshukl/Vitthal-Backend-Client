@@ -7,6 +7,30 @@ import { COOKIE_OPTIONS } from "../shared/CokkieSetting.shared";
 
 const validUserRoles = new Set(["client", "vendor", "admin", "super_admin"]);
 
+function normalizeRequiredText(value: unknown) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function parseCoordinate(value: unknown) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeCategoryCodes(value: unknown) {
+    if (!Array.isArray(value)) {
+        return [] as string[];
+    }
+
+    return value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => item.length > 0);
+}
+
 export async function registerUser(req: Request, res: Response): Promise<Response> {
 
     const { name, email, password, role: requestedRole } = req.body;
@@ -347,36 +371,229 @@ export const verifyRegisteredUser = async (req: Request, res: Response): Promise
             return res.status(401).json({ message: 'Invalid OTP' });
         }
 
-        // Mark user as verified and clear OTP fields
-        await pool.query(
-            'UPDATE users SET is_verified = TRUE, OTP = NULL, OTP_Expiry = NULL WHERE id = $1',
-            [user.id]
-        );
+            const normalizedCompanyName = normalizeRequiredText(req.body.companyName);
+            const normalizedBusinessType = normalizeRequiredText(req.body.businessType);
+            const normalizedGstNumber = normalizeRequiredText(req.body.gstNumber);
+            const normalizedCompanyWebsite = normalizeRequiredText(req.body.companyWebsite);
+            const normalizedGstCertificateLink = normalizeRequiredText(req.body.gstCertificateLink);
+            const normalizedPhone = normalizeRequiredText(req.body.phone);
+            const normalizedAlternativeNumber = normalizeRequiredText(req.body.alternativeNumber);
+            const normalizedDesignation = normalizeRequiredText(req.body.designation);
+            const normalizedBusinessDescription = normalizeRequiredText(req.body.businessDescription);
+            const normalizedAddress = normalizeRequiredText(req.body.address);
+            const normalizedCity = normalizeRequiredText(req.body.city);
+            const normalizedState = normalizeRequiredText(req.body.state);
+            const normalizedCountry = normalizeRequiredText(req.body.country);
+            const normalizedPincode = normalizeRequiredText(req.body.pincode);
+            const parsedLatitude = parseCoordinate(req.body.latitude);
+            const parsedLongitude = parseCoordinate(req.body.longitude);
+            const normalizedCreditCycle = normalizeRequiredText(req.body.creditCycle);
+            const parsedMinCommission = req.body.minimumCommissionPercentage ? parseInt(req.body.minimumCommissionPercentage) : null;
+            const parsedMaxCommission = req.body.maximumCommissionPercentage ? parseInt(req.body.maximumCommissionPercentage) : null;
 
-        // Generate access and refresh tokens
-        const refreshToken = generateRefreshToken(user.id, user.name, user.email, user.role);
-        const accessToken = generateAccessToken(user.id, user.name, user.email, user.role);
+            const shouldPersistVendorSetup = [
+                normalizedCompanyName,
+                normalizedBusinessType,
+                normalizedGstNumber,
+                normalizedPhone,
+                normalizedDesignation,
+                normalizedBusinessDescription,
+                normalizedAddress,
+                normalizedCity,
+                normalizedState,
+                normalizedCountry,
+                normalizedPincode,
+                normalizedCompanyWebsite,
+                normalizedGstCertificateLink,
+                normalizedAlternativeNumber,
+                normalizedCreditCycle,
+            ].some((value) => value.length > 0) || parsedLatitude !== null || parsedLongitude !== null || parsedMinCommission !== null || parsedMaxCommission !== null;
 
-        // Store refresh token in database
-        const tokenResult = await pool.query('UPDATE users SET refresh_token = $1 WHERE id = $2 RETURNING role', [refreshToken, user.id]);
-        const userRole = tokenResult.rows[0]?.role;
+            if (shouldPersistVendorSetup) {
+                if (
+                    !normalizedCompanyName ||
+                    !normalizedBusinessType ||
+                    !normalizedGstNumber ||
+                    !normalizedPhone ||
+                    !normalizedDesignation ||
+                    !normalizedBusinessDescription ||
+                    !normalizedAddress ||
+                    !normalizedCity ||
+                    !normalizedState ||
+                    !normalizedCountry ||
+                    !normalizedPincode ||
+                    !normalizedCreditCycle ||
+                    parsedMinCommission === null ||
+                    parsedMaxCommission === null ||
+                    parsedLatitude === null ||
+                    parsedLongitude === null
+                ) {
+                    return res.status(400).json({ message: "Missing vendor setup fields. All fields including commission details are required." });
+                }
 
-        // Set cookies
-        res.cookie(`${userRole}RefreshToken`, refreshToken, {
-            ...COOKIE_OPTIONS,
-            maxAge: 45 * 24 * 60 * 60 * 1000, // 45 days
-        });
+                if (!/^\d{6}$/.test(normalizedPincode)) {
+                    return res.status(400).json({ message: "Pincode must be 6 digits." });
+                }
 
-        res.cookie(`${userRole}AccessToken`, accessToken, {
-            ...COOKIE_OPTIONS,
-            maxAge: 30 * 60 * 1000, // 30 minutes
-        });
+                if (parsedLatitude < -90 || parsedLatitude > 90 || parsedLongitude < -180 || parsedLongitude > 180) {
+                    return res.status(400).json({ message: "Latitude/longitude out of range." });
+                }
+
+                if (parsedMinCommission < 0 || parsedMinCommission > 100) {
+                    return res.status(400).json({ message: "Minimum commission percentage must be between 0 and 100." });
+                }
+
+                if (parsedMaxCommission < 0 || parsedMaxCommission > 100) {
+                    return res.status(400).json({ message: "Maximum commission percentage must be between 0 and 100." });
+                }
+
+                if (parsedMinCommission > parsedMaxCommission) {
+                    return res.status(400).json({ message: "Minimum commission cannot be greater than maximum commission." });
+                }
+            }
+
+
+                    const selectedCategoryCodes = normalizeCategoryCodes(req.body.vendorCategories);
+            const client = await pool.connect();
+            let userRole = user.role;
+
+            try {
+                await client.query("BEGIN");
+
+                await client.query(
+                    'UPDATE users SET is_verified = TRUE, OTP = NULL, OTP_Expiry = NULL WHERE id = $1',
+                    [user.id]
+                );
+
+                if (shouldPersistVendorSetup) {
+                    const duplicateGst = await client.query(
+                        `
+                            SELECT user_id
+                            FROM vendors
+                            WHERE gst_number = $1 AND user_id <> $2
+                        `,
+                        [normalizedGstNumber, user.id]
+                    );
+
+                    if (duplicateGst.rows.length > 0) {
+                        await client.query("ROLLBACK");
+                        return res.status(409).json({ message: "This GST number is already registered with another vendor." });
+                    }
+
+                    await client.query(
+                        `
+                            INSERT INTO vendors (
+                                user_id,
+                                company_name,
+                                gst_number,
+                                gst_certificate_link,
+                                business_type,
+                                company_website,
+                                phone,
+                                alternative_number,
+                                designation,
+                                business_description,
+                                credit_cycle,
+                                minimum_commision_percentage,
+                                maximum_commision_percentage,
+                                approval_status,
+                                approval_notes,
+                                updated_at
+                            )
+                            VALUES ($1, $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9, $10, $11, $12, $13, 'pending', 'Awaiting admin approval', NOW())
+                            ON CONFLICT (user_id)
+                            DO UPDATE SET
+                                company_name = EXCLUDED.company_name,
+                                gst_number = EXCLUDED.gst_number,
+                                gst_certificate_link = EXCLUDED.gst_certificate_link,
+                                business_type = EXCLUDED.business_type,
+                                company_website = EXCLUDED.company_website,
+                                phone = EXCLUDED.phone,
+                                alternative_number = EXCLUDED.alternative_number,
+                                designation = EXCLUDED.designation,
+                                business_description = EXCLUDED.business_description,
+                                credit_cycle = EXCLUDED.credit_cycle,
+                                minimum_commision_percentage = EXCLUDED.minimum_commision_percentage,
+                                maximum_commision_percentage = EXCLUDED.maximum_commision_percentage,
+                                approval_status = EXCLUDED.approval_status,
+                                approval_notes = EXCLUDED.approval_notes,
+                                updated_at = NOW()
+                        `,
+                        [
+                            user.id,
+                            normalizedCompanyName,
+                            normalizedGstNumber,
+                            normalizedGstCertificateLink,
+                            normalizedBusinessType,
+                            normalizedCompanyWebsite,
+                            normalizedPhone,
+                            normalizedAlternativeNumber,
+                            normalizedDesignation,
+                            normalizedBusinessDescription,
+                            normalizedCreditCycle,
+                            parsedMinCommission,
+                            parsedMaxCommission
+                        ]
+                    );
+
+                    await client.query(
+                        `
+                            INSERT INTO addresses (user_id, address, city, state, country, pincode, latitude, longitude, updated_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                            ON CONFLICT (user_id)
+                            DO UPDATE SET
+                                address = EXCLUDED.address,
+                                city = EXCLUDED.city,
+                                state = EXCLUDED.state,
+                                country = EXCLUDED.country,
+                                pincode = EXCLUDED.pincode,
+                                latitude = EXCLUDED.latitude,
+                                longitude = EXCLUDED.longitude,
+                                updated_at = NOW()
+                        `,
+                        [
+                            user.id,
+                            normalizedAddress,
+                            normalizedCity,
+                            normalizedState,
+                            normalizedCountry,
+                            normalizedPincode,
+                            parsedLatitude,
+                            parsedLongitude
+                        ]
+                    );
+                }
+
+                const refreshToken = generateRefreshToken(user.id, user.name, user.email, user.role);
+                const accessToken = generateAccessToken(user.id, user.name, user.email, user.role);
+
+                const tokenResult = await client.query('UPDATE users SET refresh_token = $1 WHERE id = $2 RETURNING role', [refreshToken, user.id]);
+                userRole = tokenResult.rows[0]?.role || userRole;
+
+                await client.query("COMMIT");
+
+                res.cookie(`${userRole}RefreshToken`, refreshToken, {
+                    ...COOKIE_OPTIONS,
+                    maxAge: 45 * 24 * 60 * 60 * 1000,
+                });
+
+                res.cookie(`${userRole}AccessToken`, accessToken, {
+                    ...COOKIE_OPTIONS,
+                    maxAge: 30 * 60 * 1000,
+                });
+            } catch (transactionError) {
+                await client.query("ROLLBACK");
+                throw transactionError;
+            } finally {
+                client.release();
+            }
 
         console.log(`User ${email} verified and logged in successfully`);
 
         return res.status(200).json({
             message: 'Email verified successfully. Registration complete.',
-            user: { userId: user.id, username: user.name, email: user.email, role: user.role }
+                user: { userId: user.id, username: user.name, email: user.email, role: user.role },
+                vendorSetupComplete: shouldPersistVendorSetup
         });
     } catch (e) {
         console.error("Error while verifying registered user: ", e);

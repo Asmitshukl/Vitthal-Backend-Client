@@ -14,6 +14,17 @@ function parseCoordinate(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizeCategoryCodes(value: unknown) {
+    if (!Array.isArray(value)) {
+        return [] as string[];
+    }
+
+    return value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => item.length > 0);
+}
+
 export const addVendorController = async (req: Request, res: Response): Promise<Response> => {
     const { companyName, phone, gstNumber } = req.body;
     const { userId } = (req as any).user;
@@ -298,6 +309,7 @@ export const completeVendorSetupController = async (req: Request, res: Response)
         alternativeNumber,
         designation,
         businessDescription,
+        vendorCategories,
         address,
         city,
         state,
@@ -318,6 +330,7 @@ export const completeVendorSetupController = async (req: Request, res: Response)
     const normalizedAlternativeNumber = normalizeRequiredText(alternativeNumber);
     const normalizedDesignation = normalizeRequiredText(designation);
     const normalizedBusinessDescription = normalizeRequiredText(businessDescription);
+    const normalizedCategoryCodes = normalizeCategoryCodes(vendorCategories);
     const normalizedAddress = normalizeRequiredText(address);
     const normalizedCity = normalizeRequiredText(city);
     const normalizedState = normalizeRequiredText(state);
@@ -345,6 +358,10 @@ export const completeVendorSetupController = async (req: Request, res: Response)
         parsedLongitude === null
     ) {
         return res.status(400).json({ message: "Missing or invalid required fields." });
+    }
+
+    if (normalizedCategoryCodes.length > 3) {
+        return res.status(400).json({ message: "You can select up to 3 vendor categories." });
     }
 
     if (!/^\d{6}$/.test(normalizedPincode)) {
@@ -424,6 +441,41 @@ export const completeVendorSetupController = async (req: Request, res: Response)
                 normalizedBusinessDescription
             ]
         );
+
+        if (normalizedCategoryCodes.length > 0) {
+            const categoryResult = await client.query(
+                `
+                    SELECT id, code
+                    FROM product_category
+                    WHERE code = ANY($1::text[]) AND is_active = TRUE
+                `,
+                [normalizedCategoryCodes]
+            );
+
+            if (categoryResult.rows.length !== normalizedCategoryCodes.length) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "One or more vendor categories are invalid." });
+            }
+
+            const selectedVendor = await client.query(`SELECT id FROM vendors WHERE user_id = $1`, [userId]);
+            const vendorId = selectedVendor.rows[0]?.id;
+
+            if (!vendorId) {
+                await client.query("ROLLBACK");
+                return res.status(500).json({ message: "Vendor record not found after setup save." });
+            }
+
+            await client.query(
+                `
+                    INSERT INTO vendor_categories (vendor_id, category_id)
+                    SELECT $1, c.id
+                    FROM product_category c
+                    WHERE c.code = ANY($2::text[])
+                    ON CONFLICT (vendor_id, category_id) DO NOTHING
+                `,
+                [vendorId, normalizedCategoryCodes]
+            );
+        }
 
         const addressResult = await client.query(
             `
@@ -510,11 +562,15 @@ export const getVendorDetailsController = async (req: Request, res: Response): P
                 a.country as vendor_country,
                 a.pincode as vendor_pincode,
                 a.latitude as vendor_latitude,
-                a.longitude as vendor_longitude
+                a.longitude as vendor_longitude,
+                COALESCE(json_agg(DISTINCT jsonb_build_object('code', vc.code, 'label', vc.label)) FILTER (WHERE vc.id IS NOT NULL), '[]'::json) as vendor_categories
             FROM users u
             LEFT JOIN vendors v ON u.id = v.user_id
             LEFT JOIN addresses a ON u.id = a.user_id
+            LEFT JOIN vendor_categories vcs ON v.id = vcs.vendor_id
+            LEFT JOIN product_category vc ON vcs.category_id = vc.id
             WHERE u.id = $1 AND u.role = 'vendor'
+            GROUP BY u.id, v.id, a.id
         `;
 
         const result = await pool.query(query, [userId]);
@@ -549,11 +605,14 @@ export const checkVendorSetupStatus = async (req: Request, res: Response): Promi
             SELECT 
                 v.id as vendor_exists,
                 v.approval_status,
-                a.id as address_exists
+                a.id as address_exists,
+                COUNT(vcs.category_id) as category_count
             FROM users u
             LEFT JOIN vendors v ON u.id = v.user_id
             LEFT JOIN addresses a ON u.id = a.user_id
+            LEFT JOIN vendor_categories vcs ON v.id = vcs.vendor_id
             WHERE u.id = $1 AND u.role = 'vendor'
+            GROUP BY v.id, v.approval_status, a.id
         `;
 
         const result = await pool.query(query, [userId]);
@@ -563,13 +622,14 @@ export const checkVendorSetupStatus = async (req: Request, res: Response): Promi
         }
 
         const row = result.rows[0];
-        const isSetupComplete = row.vendor_exists !== null && row.address_exists !== null;
+        const isSetupComplete = row.vendor_exists !== null && row.address_exists !== null && Number(row.category_count) > 0;
 
         return res.status(200).json({
             message: "Setup status fetched successfully",
             isSetupComplete,
             hasVendorProfile: row.vendor_exists !== null,
             hasAddress: row.address_exists !== null,
+            hasCategories: Number(row.category_count) > 0,
             approvalStatus: row.approval_status || null
         });
     }

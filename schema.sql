@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS vendors (
     alternative_number TEXT,
     designation TEXT,
     business_description TEXT,
+    credit_cycle TEXT,
+    minimum_commision_percentage INTEGER DEFAULT 0,
+    maximum_commision_percentage INTEGER DEFAULT 0,
     rating NUMERIC(2,1) NOT NULL DEFAULT 0 CHECK (rating >= 0 AND rating <= 5),
     is_approved BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -86,6 +89,60 @@ CREATE TABLE IF NOT EXISTS vendors (
         REFERENCES users(id)
         ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS product_category (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    description TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS vendor_categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vendor_id UUID NOT NULL,
+    category_id UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT unique_vendor_category_selection UNIQUE (vendor_id, category_id),
+    CONSTRAINT fk_vendor_categories_vendor
+        FOREIGN KEY (vendor_id)
+        REFERENCES vendors(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_vendor_categories_category
+        FOREIGN KEY (category_id)
+        REFERENCES product_category(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_vendor_categories_vendor_id ON vendor_categories(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_categories_category_id ON vendor_categories(category_id);
+
+CREATE OR REPLACE FUNCTION enforce_vendor_category_limit()
+RETURNS TRIGGER AS $$
+DECLARE
+    category_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO category_count
+    FROM vendor_categories
+    WHERE vendor_id = NEW.vendor_id;
+
+    IF category_count >= 3 THEN
+        RAISE EXCEPTION 'A vendor can select up to 3 categories only';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_vendor_category_limit ON vendor_categories;
+CREATE TRIGGER trg_vendor_category_limit
+BEFORE INSERT ON vendor_categories
+FOR EACH ROW
+EXECUTE FUNCTION enforce_vendor_category_limit();
 
 -- ================================
 -- CATALOG LAYER
@@ -352,3 +409,6 @@ CREATE INDEX IF NOT EXISTS idx_cart_items_product_id ON cart_items(product_id);
 --order indexs : 
 CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+CREATE INDEX IF NOT EXISTS idx_vendor_categories_vendor_id ON vendor_categories(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_categories_category_id ON vendor_categories(category_id);
