@@ -10,7 +10,10 @@ import checkoutRouter from './Routers/Checkout.Router';
 import authRouter from './Routers/Auth.router';
 import vendorsRouter from './Routers/Vendors.Router';
 import cartRouter from './Routers/Cart.router';
+import wishlistRouter from './Routers/Wishlist.router';
 import orderRouter from './Routers/Order.router';
+import reviewRouter from './Routers/Review.router';
+import { startAbandonedReminderJob } from './jobs/abandonedReminder.job';
 
 dotenv.config();
 
@@ -66,14 +69,18 @@ void ensureMarketplaceSchema().catch((error) => {
     console.error("Failed to ensure marketplace schema:", error);
 });
 
+startAbandonedReminderJob();
+
 // Define routes
 app.use("/api/auth", authRouter);
 app.use("/api/products", productRouter);
 app.use("/api/vendors", vendorsRouter);
 app.use("/api/client", clientRouter);
 app.use("/api/cart", cartRouter);
+app.use("/api/wishlist", wishlistRouter);
 app.use("/api/checkout", checkoutRouter);
 app.use("/api/orders", orderRouter);
+app.use("/api/reviews", reviewRouter);
 
 // Start the server
 app.listen(PORT, () => {

@@ -454,6 +454,16 @@ export const verifyRegisteredUser = async (req: Request, res: Response): Promise
 
 
                     const selectedCategoryCodes = normalizeCategoryCodes(req.body.vendorCategories);
+
+                    // Validate that at least one category is selected if vendor setup is being completed
+                    if (shouldPersistVendorSetup && selectedCategoryCodes.length === 0) {
+                        return res.status(400).json({ message: "Please select at least one vendor category." });
+                    }
+
+                    if (selectedCategoryCodes.length > 3) {
+                        return res.status(400).json({ message: "You can select up to 3 vendor categories." });
+                    }
+
             const client = await pool.connect();
             let userRole = user.role;
 
@@ -562,6 +572,44 @@ export const verifyRegisteredUser = async (req: Request, res: Response): Promise
                             parsedLongitude
                         ]
                     );
+
+                    // Get the vendor record to link categories
+                    const vendorResult = await client.query(
+                        `SELECT id FROM vendors WHERE user_id = $1`,
+                        [user.id]
+                    );
+
+                    if (vendorResult.rows.length > 0) {
+                        const vendorId = vendorResult.rows[0].id;
+
+                        // Delete existing vendor categories first (for updates)
+                        await client.query(
+                            `DELETE FROM vendor_categories WHERE vendor_id = $1`,
+                            [vendorId]
+                        );
+
+                        // Insert selected categories
+                        if (selectedCategoryCodes.length > 0) {
+                            for (const categoryCode of selectedCategoryCodes) {
+                                const categoryResult = await client.query(
+                                    `SELECT id FROM product_category WHERE code = $1 AND is_active = TRUE`,
+                                    [categoryCode]
+                                );
+
+                                if (categoryResult.rows.length > 0) {
+                                    const categoryId = categoryResult.rows[0].id;
+                                    await client.query(
+                                        `
+                                            INSERT INTO vendor_categories (vendor_id, category_id)
+                                            VALUES ($1, $2)
+                                            ON CONFLICT (vendor_id, category_id) DO NOTHING
+                                        `,
+                                        [vendorId, categoryId]
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
 
                 const refreshToken = generateRefreshToken(user.id, user.name, user.email, user.role);

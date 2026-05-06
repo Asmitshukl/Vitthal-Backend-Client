@@ -3,6 +3,97 @@ import pool from "../DbConnect";
 
 const actionTaker = ['super_admin', 'admin', 'vendor'];
 
+type SpecificationEntry = {
+    spec_key: string;
+    spec_value: string;
+    approval_status: "pending" | "approved" | "rejected";
+};
+
+const approvedSpecificationsSelect = `
+                COALESCE(specAgg.specifications, '{}'::jsonb) AS specifications
+            `;
+
+const approvedSpecificationsJoin = `
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(
+                    jsonb_object_agg(ps.spec_key, ps.spec_value ORDER BY ps.created_at),
+                    '{}'::jsonb
+                ) AS specifications
+                FROM product_specification ps
+                WHERE ps.product_id = p.id
+                  AND ps.approval_status = 'approved'
+            ) specAgg ON true
+        `;
+
+function normalizeSpecificationEntries(
+    specifications: unknown,
+    defaultApprovalStatus: "pending" | "approved"
+): SpecificationEntry[] {
+    if (!specifications) {
+        return [];
+    }
+
+    const rawEntries = Array.isArray(specifications)
+        ? specifications
+        : typeof specifications === "object"
+            ? Object.entries(specifications as Record<string, unknown>).map(([key, value]) => ({ key, value }))
+            : (() => {
+                if (typeof specifications !== "string") {
+                    return [] as Array<{ key: string; value: unknown }>;
+                }
+
+                try {
+                    const parsed = JSON.parse(specifications) as unknown;
+                    if (Array.isArray(parsed)) {
+                        return parsed as Array<{ key: string; value: unknown }>;
+                    }
+
+                    if (parsed && typeof parsed === "object") {
+                        return Object.entries(parsed as Record<string, unknown>).map(([key, value]) => ({ key, value }));
+                    }
+
+                    return [] as Array<{ key: string; value: unknown }>;
+                }
+                catch {
+                    return [] as Array<{ key: string; value: unknown }>;
+                }
+            })();
+
+    return rawEntries
+        .map((entry) => {
+            const key = String((entry as { key?: unknown; spec_key?: unknown }).key ?? (entry as { key?: unknown; spec_key?: unknown }).spec_key ?? "").trim();
+            const value = String((entry as { value?: unknown; spec_value?: unknown }).value ?? (entry as { value?: unknown; spec_value?: unknown }).spec_value ?? "").trim();
+            const approvalStatus = (entry as { approval_status?: unknown }).approval_status;
+
+            if (!key) {
+                return null;
+            }
+
+            if (approvalStatus === "pending" || approvalStatus === "approved" || approvalStatus === "rejected") {
+                return { spec_key: key, spec_value: value, approval_status: approvalStatus };
+            }
+
+            return { spec_key: key, spec_value: value, approval_status: defaultApprovalStatus };
+        })
+        .filter((entry): entry is SpecificationEntry => Boolean(entry));
+}
+
+async function getVendorAllowedCategories(userId: string) {
+    const categoryResult = await pool.query(
+        `
+            SELECT pc.code, pc.label
+            FROM vendors v
+            JOIN vendor_categories vc ON vc.vendor_id = v.id
+            JOIN product_category pc ON pc.id = vc.category_id
+            WHERE v.user_id = $1
+              AND pc.is_active = TRUE
+        `,
+        [userId]
+    );
+
+    return categoryResult.rows as Array<{ code: string; label: string }>;
+}
+
 async function getApprovedVendorProfile(userId: string) {
     const vendorResult = await pool.query(
         `
@@ -48,21 +139,6 @@ export const addProductController = async (req: Request, res: Response): Promise
         return res.status(400).json({ message: "Name, description, category, and productType are required" });
     }
 
-    let parsedSpecifications: Record<string, unknown> | unknown[] = {};
-    if (specifications) {
-        if (typeof specifications === "string") {
-            try {
-                parsedSpecifications = JSON.parse(specifications);
-            }
-            catch {
-                return res.status(400).json({ message: "Specifications must be valid JSON." });
-            }
-        }
-        else if (typeof specifications === "object" && specifications !== null) {
-            parsedSpecifications = specifications;
-        }
-    }
-
     const vendorProfile = userId ? await getVendorProfileIfExists(userId) : undefined;
     const isApprovedVendorActor = Boolean(
         vendorProfile &&
@@ -76,21 +152,41 @@ export const addProductController = async (req: Request, res: Response): Promise
         return res.status(403).json({ message: "Unauthorized! Only admins, super admins, and vendors can add products." });
     }
 
+    const actsAsVendor = role === "vendor" || isApprovedVendorActor;
+    if (actsAsVendor) {
+        const allowedCategories = await getVendorAllowedCategories(userId);
+        const normalizedCategory = String(category).trim().toLowerCase();
+        const hasAllowedCategory = allowedCategories.some((allowedCategory) => {
+            return allowedCategory.code.trim().toLowerCase() === normalizedCategory || allowedCategory.label.trim().toLowerCase() === normalizedCategory;
+        });
+
+        if (!hasAllowedCategory) {
+            return res.status(403).json({ message: "You can only add products that belong to your assigned vendor categories." });
+        }
+    }
+
+    const parsedSpecifications = normalizeSpecificationEntries(
+        specifications,
+        actsAsVendor ? "pending" : "approved"
+    );
+
+    const client = await pool.connect();
+
     try {
-        const actsAsVendor = role === "vendor" || isApprovedVendorActor;
         const approvalStatus = actsAsVendor ? "pending" : "approved";
+        await client.query("BEGIN");
+
         const query = `
             INSERT INTO products (
                 name,
                 description,
                 category,
                 product_type,
-                specifications,
                 approval_status,
                 created_by_user_id,
                 is_active
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             returning *
         `;
         const values = [
@@ -98,23 +194,52 @@ export const addProductController = async (req: Request, res: Response): Promise
             description,
             category,
             productType,
-            parsedSpecifications,
             approvalStatus,
-            actsAsVendor ? userId : null,
+            userId,
             !actsAsVendor
         ];
-        const result = await pool.query(query, values);
+        const result = await client.query(query, values);
+
+        if (parsedSpecifications.length > 0) {
+            for (const specification of parsedSpecifications) {
+                await client.query(
+                    `
+                        INSERT INTO product_specification (
+                            product_id,
+                            spec_key,
+                            spec_value,
+                            approval_status,
+                            created_by_user_id
+                        )
+                        VALUES ($1, $2, $3, $4, $5)
+                    `,
+                        [
+                        result.rows[0].id,
+                        specification.spec_key,
+                        specification.spec_value,
+                        specification.approval_status,
+                        userId
+                    ]
+                );
+            }
+        }
+
+        await client.query("COMMIT");
         return res.status(201).json({
             message: actsAsVendor ? "Product submitted for approval successfully" : "Product added successfully",
             result: result.rows[0]
         });
     }
     catch (error) {
+        await client.query("ROLLBACK");
         if (error instanceof Error) {
             return res.status(400).json({ message: error.message });
         }
         console.log("Error while adding Products : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
+    }
+    finally {
+        client.release();
     }
 }
 
@@ -169,6 +294,56 @@ export const addVendorProductController = async (req: Request, res: Response): P
     }
 }
 
+export const addProductSpecificationsController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId, specifications } = req.body;
+    const { userId, role } = (req as any).user;
+
+    if (!productId || !specifications) {
+        return res.status(400).json({ message: "productId and specifications are required" });
+    }
+
+    try {
+        // Ensure product exists
+        const productResult = await pool.query(`SELECT id, approval_status FROM products WHERE id = $1`, [productId]);
+        if (productResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found." });
+        }
+
+        const actsAsVendor = role === "vendor";
+        const parsedSpecifications = normalizeSpecificationEntries(specifications, actsAsVendor ? "pending" : "approved");
+
+        if (parsedSpecifications.length === 0) {
+            return res.status(400).json({ message: "No valid specifications provided." });
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+
+            for (const specification of parsedSpecifications) {
+                await client.query(
+                    `INSERT INTO product_specification (product_id, spec_key, spec_value, approval_status, created_by_user_id)
+                     VALUES ($1, $2, $3, $4, $5)`,
+                    [productId, specification.spec_key, specification.spec_value, specification.approval_status, userId]
+                );
+            }
+
+            await client.query("COMMIT");
+            return res.status(201).json({ message: actsAsVendor ? "Specifications submitted for approval" : "Specifications added successfully" });
+        } catch (err) {
+            await client.query("ROLLBACK");
+            console.error("Error inserting product specifications:", err);
+            return res.status(500).json({ message: "Internal Server Error" });
+        } finally {
+            client.release();
+        }
+    }
+    catch (error) {
+        console.error("Error while adding product specifications : ", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+}
+
 export const deleteProduct = async (req: Request, res: Response): Promise<Response> => {
     const { productId } = req.body;
     const { role } = (req as any).user;
@@ -194,7 +369,7 @@ export const deleteProduct = async (req: Request, res: Response): Promise<Respon
 }
 
 export const updateProduct = async (req: Request, res: Response): Promise<Response> => {
-    const { productId, name, description, category, productType, specification } = req.body;
+    const { productId, name, description, category, productType } = req.body;
     const { role } = (req as any).user;
 
     if (!productId) {
@@ -206,8 +381,8 @@ export const updateProduct = async (req: Request, res: Response): Promise<Respon
     }
 
     try {
-        const query = `UPDATE products SET name = $1, description = $2, category = $3, product_type = $4, specifications = $5 WHERE id = $6`;
-        const values = [name, description, category, productType, specification, productId];
+        const query = `UPDATE products SET name = $1, description = $2, category = $3, product_type = $4 WHERE id = $5`;
+        const values = [name, description, category, productType, productId];
         const result = await pool.query(query, values);
         return res.status(200).json({ message: "Product updated successfully", result });
     }
@@ -227,7 +402,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
         const offsetValue = Number(offset) * limitValue;
 
         let baseQuery = `
-            SELECT id, name, description, category, product_type, specifications
+            SELECT id, name, description, category, product_type
             FROM products
             WHERE approval_status = 'approved' AND is_active = TRUE
         `;
@@ -271,22 +446,24 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
                 p.description,
                 p.category,
                 p.product_type,
-                p.specifications,
+                ${approvedSpecificationsSelect},
 
                 -- Primary image
                 pImg.image_url AS primary_image,
 
-                -- Seller count
-                COALESCE(vc.vendor_count, 0) AS seller_count,
+                -- Seller count (cast to int)
+                COALESCE(vc.vendor_count, 0)::int AS seller_count,
 
-                -- Price range
-                COALESCE(pr.min_price, 0) AS min_price,
-                COALESCE(pr.max_price, 0) AS max_price,
-                COALESCE(pr.min_moq, 1) AS min_moq
+                -- Price range (cast to numeric)
+                COALESCE(pr.min_price, 0)::numeric AS min_price,
+                COALESCE(pr.max_price, 0)::numeric AS max_price,
+                COALESCE(pr.min_moq, 1)::int AS min_moq
 
             FROM (
                 ${baseQuery}
             ) p
+
+            ${approvedSpecificationsJoin}
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -295,7 +472,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
 
             -- Vendor count (lightweight aggregation)
             LEFT JOIN LATERAL (
-                SELECT COUNT(DISTINCT vendor_id) AS vendor_count
+                SELECT COUNT(DISTINCT vendor_id)::int AS vendor_count
                 FROM vendor_products vp
                 JOIN vendors v ON v.id = vp.vendor_id
                 JOIN users u ON u.id = v.user_id
@@ -310,9 +487,9 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
             -- Price range from vendor_products
             LEFT JOIN LATERAL (
                 SELECT 
-                    MIN(price) AS min_price, 
-                    MAX(price) AS max_price,
-                    MIN(moq) AS min_moq
+                    MIN(price)::numeric AS min_price, 
+                    MAX(price)::numeric AS max_price,
+                    MIN(moq)::int AS min_moq
                 FROM vendor_products vp
                 JOIN vendors v ON v.id = vp.vendor_id
                 JOIN users u ON u.id = v.user_id
@@ -350,7 +527,13 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                 p.description,
                 p.category,
                 p.product_type,
-                p.specifications,
+                p.material,
+                p.grade,
+                p.application,
+                p.standard,
+                p.rating,
+                p.review_count,
+                ${approvedSpecificationsSelect},
 
                 -- Images array
                 COALESCE(
@@ -365,23 +548,28 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                     '[]'
                 ) AS images,
 
-                -- Vendors array
+                -- Vendors array (with rating, review_count, and vendor address coordinates)
                 COALESCE(
                     JSON_AGG(DISTINCT JSONB_BUILD_OBJECT(
                         'vendor_id', v.id,
-                        'company_name', v.company_name,
                         'price', vp.price,
                         'moq', vp.moq,
-                        'stock_quantity', vp.stock_quantity
+                        'stock_quantity', vp.stock_quantity,
+                        'rating', v.rating,
+                        'review_count', v.review_count,
+                        'latitude', va.latitude,
+                        'longitude', va.longitude
                     )) FILTER (WHERE v.id IS NOT NULL),
                     '[]'
                 ) AS vendors
 
             FROM products p
+            ${approvedSpecificationsJoin}
             LEFT JOIN products_images pImg ON p.id = pImg.product_id
             LEFT JOIN vendor_products vp ON p.id = vp.product_id
             LEFT JOIN vendors v ON vp.vendor_id = v.id
             LEFT JOIN users u ON v.user_id = u.id
+            LEFT JOIN addresses va ON v.user_id = va.user_id
 
             WHERE p.id = $1
               AND p.approval_status = 'approved'
@@ -394,7 +582,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                 AND u.is_active = true
               ))
 
-            GROUP BY p.id;
+            GROUP BY p.id, specAgg.specifications;
         `;
         const result = await pool.query(query, [productId]);
 
@@ -427,17 +615,18 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
                 p.description,
                 p.category,
                 p.product_type,
+                ${approvedSpecificationsSelect},
 
                 -- Primary image
                 pImg.image_url AS primary_image,
 
-                -- Vendor count (optimized)
-                COALESCE(vc.vendor_count, 0) AS vendor_count,
+                -- Vendor count (optimized, cast to int)
+                COALESCE(vc.vendor_count, 0)::int AS vendor_count,
 
-                -- Price range
-                COALESCE(pr.min_price, 0) AS min_price,
-                COALESCE(pr.max_price, 0) AS max_price,
-                COALESCE(pr.min_moq, 1) AS min_moq
+                -- Price range (cast to numeric)
+                COALESCE(pr.min_price, 0)::numeric AS min_price,
+                COALESCE(pr.max_price, 0)::numeric AS max_price,
+                COALESCE(pr.min_moq, 1)::int AS min_moq
 
             FROM (
                 SELECT id, name, description, category, product_type
@@ -449,6 +638,8 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
                 LIMIT $3 OFFSET $2
             ) p
 
+                        ${approvedSpecificationsJoin}
+
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
                 ON p.id = pImg.product_id 
@@ -456,7 +647,7 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
 
             -- Vendor count (ONLY for selected products)
             LEFT JOIN LATERAL (
-                SELECT COUNT(DISTINCT vendor_id) AS vendor_count
+                SELECT COUNT(DISTINCT vendor_id)::int AS vendor_count
                 FROM vendor_products vp
                 JOIN vendors v ON v.id = vp.vendor_id
                 JOIN users u ON u.id = v.user_id
@@ -471,9 +662,9 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
             -- Price range from vendor_products
             LEFT JOIN LATERAL (
                 SELECT 
-                    MIN(price) AS min_price, 
-                    MAX(price) AS max_price,
-                    MIN(moq) AS min_moq
+                    MIN(price)::numeric AS min_price, 
+                    MAX(price)::numeric AS max_price,
+                    MIN(moq)::int AS min_moq
                 FROM vendor_products vp
                 JOIN vendors v ON v.id = vp.vendor_id
                 JOIN users u ON u.id = v.user_id
@@ -520,10 +711,11 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
                 p.description,
                 p.category,
                 p.product_type,
+                ${approvedSpecificationsSelect},
 
                 pImg.image_url AS primary_image,
 
-                COALESCE(vc.vendor_count, 0) AS vendor_count
+                COALESCE(vc.vendor_count, 0)::int AS vendor_count
 
             FROM (
                 SELECT id, name, description, category, product_type
@@ -535,12 +727,14 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
                 LIMIT $3 OFFSET $2
             ) p
 
+                        ${approvedSpecificationsJoin}
+
             LEFT JOIN products_images pImg 
                 ON p.id = pImg.product_id 
                 AND pImg.is_primary = true
 
             LEFT JOIN LATERAL (
-                SELECT COUNT(DISTINCT vendor_id) AS vendor_count
+                SELECT COUNT(DISTINCT vendor_id)::int AS vendor_count
                 FROM vendor_products vp
                 JOIN vendors v ON v.id = vp.vendor_id
                 JOIN users u ON u.id = v.user_id
@@ -647,3 +841,195 @@ export const getVendorProductsController = async (req: Request, res: Response): 
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
+
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+export const getRankedVendors = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { userLat, userLng } = req.query;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    const parsedLat = Number(userLat);
+    const parsedLng = Number(userLng);
+
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
+        return res.status(400).json({ message: "Valid userLat and userLng query parameters are required" });
+    }
+
+    try {
+        const query = `
+            SELECT
+                v.id AS vendor_id,
+                vp.price,
+                vp.moq,
+                vp.stock_quantity,
+                v.rating,
+                v.review_count,
+                va.latitude,
+                va.longitude
+            FROM vendor_products vp
+            JOIN vendors v ON vp.vendor_id = v.id
+            JOIN users u ON v.user_id = u.id
+            LEFT JOIN addresses va ON v.user_id = va.user_id
+            WHERE vp.product_id = $1
+              AND vp.is_active = true
+              AND v.approval_status = 'approved'
+              AND v.is_active = true
+              AND v.is_blocked = false
+              AND u.is_active = true
+        `;
+        const result = await pool.query(query, [productId]);
+
+        const vendors = result.rows.map((row) => {
+            const price = Number(row.price) || 0;
+            const rating = Number(row.rating) || 0;
+            const reviewCount = Number(row.review_count) || 0;
+            const vendorLat = row.latitude !== null ? Number(row.latitude) : null;
+            const vendorLng = row.longitude !== null ? Number(row.longitude) : null;
+
+            let distance: number | null = null;
+            if (vendorLat !== null && vendorLng !== null) {
+                distance = haversineDistance(parsedLat, parsedLng, vendorLat, vendorLng);
+            }
+
+            return {
+                vendor_id: row.vendor_id,
+                price,
+                moq: row.moq,
+                stock_quantity: row.stock_quantity,
+                rating,
+                review_count: reviewCount,
+                latitude: vendorLat,
+                longitude: vendorLng,
+                distance,
+            };
+        });
+
+        if (vendors.length === 0) {
+            return res.status(200).json({ message: "No vendors found", data: [] });
+        }
+
+        const prices = vendors.map((v) => v.price).filter((p) => p > 0);
+        const distances = vendors.map((v) => v.distance).filter((d): d is number => d !== null);
+        const ratings = vendors.map((v) => v.rating);
+
+        const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+        const maxPrice = prices.length > 0 ? Math.max(...prices) : 0;
+        const minDist = distances.length > 0 ? Math.min(...distances) : 0;
+        const maxDist = distances.length > 0 ? Math.max(...distances) : 0;
+        const maxRating = ratings.length > 0 ? Math.max(...ratings) : 5;
+
+        const PRICE_WEIGHT = 0.4;
+        const DISTANCE_WEIGHT = 0.4;
+        const REVIEW_WEIGHT = 0.2;
+
+        const scoredVendors = vendors.map((v) => {
+            const priceScore = maxPrice > minPrice ? (maxPrice - v.price) / (maxPrice - minPrice) : 1;
+            const distanceScore = v.distance !== null && maxDist > minDist
+                ? (maxDist - v.distance) / (maxDist - minDist)
+                : v.distance !== null ? 1 : 0.5;
+            const reviewScore = maxRating > 0 ? v.rating / maxRating : 0;
+
+            const totalScore = (PRICE_WEIGHT * priceScore) + (DISTANCE_WEIGHT * distanceScore) + (REVIEW_WEIGHT * reviewScore);
+
+            return {
+                ...v,
+                price_score: Math.round(priceScore * 100) / 100,
+                distance_score: Math.round(distanceScore * 100) / 100,
+                review_score: Math.round(reviewScore * 100) / 100,
+                total_score: Math.round(totalScore * 100) / 100,
+            };
+        });
+
+        scoredVendors.sort((a, b) => b.total_score - a.total_score);
+
+        scoredVendors.forEach((v, index) => {
+            (v as any).rank = index + 1;
+        });
+
+        return res.status(200).json({ message: "Ranked vendors fetched successfully", data: scoredVendors });
+    } catch (e) {
+        console.log("Error while ranking vendors : ", e);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const getRelatedProducts = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    try {
+        const query = `
+            SELECT
+                p.id AS product_id,
+                p.name AS product_name,
+                p.category,
+                p.product_type,
+                p.material,
+                p.grade,
+                p.rating,
+                p.review_count,
+                pImg.image_url AS primary_image,
+                COALESCE(vc.vendor_count, 0)::int AS seller_count,
+                COALESCE(pr.min_price, 0)::numeric AS min_price,
+                COALESCE(pr.max_price, 0)::numeric AS max_price,
+                COALESCE(pr.min_moq, 1)::int AS min_moq
+            FROM products p
+            LEFT JOIN products_images pImg
+                ON p.id = pImg.product_id AND pImg.is_primary = true
+            LEFT JOIN LATERAL (
+                SELECT COUNT(DISTINCT vendor_id)::int AS vendor_count
+                FROM vendor_products vp
+                JOIN vendors v ON v.id = vp.vendor_id
+                JOIN users u ON u.id = v.user_id
+                WHERE vp.product_id = p.id
+                  AND vp.is_active = true
+                  AND v.approval_status = 'approved'
+                  AND v.is_active = true
+                  AND v.is_blocked = false
+                  AND u.is_active = true
+            ) vc ON true
+            LEFT JOIN LATERAL (
+                SELECT
+                    MIN(price)::numeric AS min_price,
+                    MAX(price)::numeric AS max_price,
+                    MIN(moq)::int AS min_moq
+                FROM vendor_products vp
+                JOIN vendors v ON v.id = vp.vendor_id
+                JOIN users u ON u.id = v.user_id
+                WHERE vp.product_id = p.id
+                  AND vp.is_active = true
+                  AND v.approval_status = 'approved'
+                  AND v.is_active = true
+                  AND v.is_blocked = false
+                  AND u.is_active = true
+            ) pr ON true
+            WHERE p.approval_status = 'approved'
+              AND p.is_active = TRUE
+              AND p.id != $1
+              AND p.category = (SELECT category FROM products WHERE id = $1)
+            ORDER BY p.rating DESC NULLS LAST, p.review_count DESC NULLS LAST, p.created_at DESC
+            LIMIT 8
+        `;
+        const result = await pool.query(query, [productId]);
+        return res.status(200).json({ message: "Related products fetched successfully", data: result.rows });
+    } catch (e) {
+        console.log("Error while fetching related products : ", e);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};

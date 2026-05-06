@@ -200,3 +200,119 @@ export const getVendorOrderByIdController = async (req: Request, res: Response):
         return res.status(500).json({ message: "Internal server error" });
     }
 }
+
+export const getOrderTrackingController = async (req: Request, res: Response): Promise<Response> => {
+    const authUser = (req as any).user;
+    if (!authUser?.userId || !authUser?.role) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { userId, role } = authUser;
+    if (role !== 'client') {
+        return res.status(403).json({ message: "Only clients can track orders" });
+    }
+
+    const { id } = req.params;
+    if (!id) {
+        return res.status(400).json({ message: "Order ID is required" });
+    }
+
+    try {
+        // Fetch order details ensuring it belongs to this user
+        const orderQuery = `
+            SELECT 
+                o.id AS order_id,
+                o.status,
+                o.payment_status,
+                o.total_amount,
+                o.created_at,
+                o.updated_at,
+                o.address_line,
+                o.city,
+                o.state,
+                o.country,
+                o.pincode,
+                o.latitude,
+                o.langitude,
+                o.order_reference,
+                o.order_notes,
+                v.company_name AS vendor_name,
+                v.id AS vendor_id
+            FROM orders o
+            JOIN vendors v ON o.vendor_id = v.id
+            WHERE o.id = $1 AND o.user_id = $2
+            LIMIT 1;
+        `;
+        const orderResult = await pool.query(orderQuery, [id, userId]);
+
+        if (orderResult.rows.length === 0) {
+            return res.status(404).json({ message: "Order not found or access denied" });
+        }
+
+        const order = orderResult.rows[0];
+
+        // Fetch order items
+        const itemsQuery = `
+            SELECT 
+                oi.product_id,
+                p.name AS product_name,
+                p.description AS product_description,
+                (SELECT image_url FROM products_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1) AS image_url,
+                oi.quantity,
+                oi.price
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = $1
+            ORDER BY oi.created_at;
+        `;
+        const itemsResult = await pool.query(itemsQuery, [id]);
+
+        // Fetch order status history
+        const statusHistoryQuery = `
+            SELECT 
+                osh.id,
+                osh.status,
+                osh.note,
+                osh.created_at
+            FROM order_status_history osh
+            WHERE osh.order_id = $1
+            ORDER BY osh.created_at ASC;
+        `;
+        const statusHistoryResult = await pool.query(statusHistoryQuery, [id]);
+
+        // Fetch fulfillment tracking with center details
+        const fulfillmentQuery = `
+            SELECT 
+                oft.id,
+                oft.status AS fulfillment_status,
+                oft.note AS fulfillment_note,
+                oft.created_at AS fulfillment_updated_at,
+                fc.id AS center_id,
+                fc.name AS center_name,
+                fc.address AS center_address,
+                fc.city AS center_city,
+                fc.state AS center_state,
+                fc.country AS center_country,
+                fc.pincode AS center_pincode,
+                fc.latitude AS center_latitude,
+                fc.longitude AS center_longitude
+            FROM order_fulfillment_tracking oft
+            LEFT JOIN fulfillment_centers fc ON oft.fulfillment_center_id = fc.id
+            WHERE oft.order_id = $1
+            ORDER BY oft.created_at ASC;
+        `;
+        const fulfillmentResult = await pool.query(fulfillmentQuery, [id]);
+
+        return res.status(200).json({
+            data: {
+                order,
+                items: itemsResult.rows,
+                statusHistory: statusHistoryResult.rows,
+                fulfillmentTracking: fulfillmentResult.rows,
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching order tracking:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+}

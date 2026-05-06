@@ -1,13 +1,15 @@
 import { Router } from "express";
-import { getOrdersController, getVendorOrdersController, getVendorOrderByIdController } from "../Controllers/Order.Controller";
+import { getOrdersController, getVendorOrdersController, getVendorOrderByIdController, getOrderTrackingController } from "../Controllers/Order.Controller";
 import { authMiddleware } from "../Middleware/AuthMiddleware";
+import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
 
 const orderRouter = Router();
 
 orderRouter.use(authMiddleware);
 
 orderRouter.get("/", getOrdersController);
-orderRouter.get("/vendor", getVendorOrdersController);
-orderRouter.get("/vendor/:id", getVendorOrderByIdController);
+orderRouter.get("/track/:id", getOrderTrackingController);
+orderRouter.get("/vendor", requireApprovedVendor, getVendorOrdersController);
+orderRouter.get("/vendor/:id", requireApprovedVendor, getVendorOrderByIdController);
 
 export default orderRouter;

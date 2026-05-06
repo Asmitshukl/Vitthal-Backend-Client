@@ -1,9 +1,10 @@
 import { Router } from "express";
 
-import { addVendorController, createVendorAddress, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, checkVendorSetupStatus, completeVendorSetupController } from "../Controllers/Vendors.Controller";
+import { addVendorController, createVendorAddress, getVendorCategoriesController, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, checkVendorSetupStatus, completeVendorSetupController, getVendorIdStatusController } from "../Controllers/Vendors.Controller";
 import { getVendorDashboardController, getVendorAnalyticsController } from "../Controllers/VendorDashboard.Controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
+import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
 
 const vendorsRouter = Router();
 vendorsRouter.use(authMiddleware);
@@ -14,10 +15,12 @@ vendorsRouter.put("/updateVendorBasicDetails", updateVendorBasicDetailsControlle
 vendorsRouter.post("/createVendorAddress", createVendorAddress);
 vendorsRouter.put("/updateVendorAddress", updateVendorAddress);
 
+vendorsRouter.get("/getVendorCategories", getVendorCategoriesController);
 vendorsRouter.get("/getVendorDetails", getVendorDetailsController);
 vendorsRouter.get("/checkSetupStatus", checkVendorSetupStatus);
-vendorsRouter.get("/dashboard", getVendorDashboardController);
-vendorsRouter.get("/analytics", getVendorAnalyticsController);
+vendorsRouter.get("/vendorIdStatus", getVendorIdStatusController);
+vendorsRouter.get("/dashboard", requireApprovedVendor, getVendorDashboardController);
+vendorsRouter.get("/analytics", requireApprovedVendor, getVendorAnalyticsController);
 
 // vendorsRouter.get("/product/:productId", getVendorProductByIdController);
 // vendorsRouter.put("/product/:productId", updateVendorProductController);

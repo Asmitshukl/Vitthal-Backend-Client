@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import pool from "../DbConnect";
+import { getVendorApprovalStatusByUserId } from "../Middleware/VendorApprovalMiddleware";
 
 function normalizeRequiredText(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
@@ -364,6 +365,10 @@ export const completeVendorSetupController = async (req: Request, res: Response)
         return res.status(400).json({ message: "You can select up to 3 vendor categories." });
     }
 
+    if (normalizedCategoryCodes.length === 0) {
+        return res.status(400).json({ message: "Please select at least one vendor category." });
+    }
+
     if (!/^\d{6}$/.test(normalizedPincode)) {
         return res.status(400).json({ message: "Pincode must be 6 digits." });
     }
@@ -590,6 +595,41 @@ export const getVendorDetailsController = async (req: Request, res: Response): P
     }
 }
 
+export const getVendorCategoriesController = async (req: Request, res: Response): Promise<Response> => {
+    const { userId, role } = (req as any).user;
+    if (!userId) {
+        return res.status(400).json({ message: "User ID is required!" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can access their categories!" });
+    }
+
+    try {
+                const query = `
+                        SELECT pc.code, pc.label, pc.sort_order
+                        FROM vendors v
+                        INNER JOIN vendor_categories vc ON vc.vendor_id = v.id
+                        INNER JOIN product_category pc ON pc.id = vc.category_id
+                        WHERE v.user_id = $1
+                            AND pc.is_active = TRUE
+                        GROUP BY pc.code, pc.label, pc.sort_order
+                        ORDER BY pc.sort_order ASC, pc.label ASC
+                `;
+
+        const result = await pool.query(query, [userId]);
+
+        return res.status(200).json({
+            message: "Vendor categories fetched successfully",
+            data: result.rows,
+        });
+    }
+    catch (e) {
+        console.error("Error : ", e);
+        return res.status(500).json({ message: "internal server error" });
+    }
+}
+
 export const checkVendorSetupStatus = async (req: Request, res: Response): Promise<Response> => {
     const { userId, role } = (req as any).user;
     if (!userId) {
@@ -636,5 +676,35 @@ export const checkVendorSetupStatus = async (req: Request, res: Response): Promi
     catch (e) {
         console.error("Error : ", e);
         return res.status(500).json({ message: 'internal server error' });
+    }
+}
+
+export const getVendorIdStatusController = async (req: Request, res: Response): Promise<Response> => {
+    const { userId, role } = (req as any).user || {};
+
+    if (!userId) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(200).json({
+            id: userId,
+            role,
+            approval_status: null,
+        });
+    }
+
+    try {
+        const approvalStatus = await getVendorApprovalStatusByUserId(userId);
+
+        return res.status(200).json({
+            id: userId,
+            role: "vendor",
+            approval_status: approvalStatus ?? "pending",
+        });
+    }
+    catch (e) {
+        console.error("Error fetching vendor id status:", e);
+        return res.status(500).json({ message: "internal server error" });
     }
 }
