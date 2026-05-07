@@ -44,13 +44,16 @@ app.use("/", cors({
 
         const isLocalhost = /^http:\/\/localhost:\d+$/.test(origin);
         const isLanIp = /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin);
+        const isVercelPreview = /^https:\/\/.*\.vercel\.app$/.test(origin);
 
-        if (allowedOrigins.has(origin) || isLocalhost || isLanIp) {
+        if (allowedOrigins.has(origin) || isLocalhost || isLanIp || isVercelPreview) {
             callback(null, true);
             return;
         }
+        console.log("Blocked CORS origin:", origin);
 
-        callback(new Error(`Origin ${origin} is not allowed by CORS`));
+        // 🔥 IMPORTANT: don't throw error
+        return callback(null, false);
     },
     credentials: true,
 }));
