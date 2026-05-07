@@ -52,7 +52,6 @@ app.use("/", cors({
         }
         console.log("Blocked CORS origin:", origin);
 
-        // 🔥 IMPORTANT: don't throw error
         return callback(null, false);
     },
     credentials: true,
