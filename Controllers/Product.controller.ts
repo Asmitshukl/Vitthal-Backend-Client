@@ -594,19 +594,64 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
     }
 };
 
+export const getCategories = async (_req: Request, res: Response): Promise<Response> => {
+    try {
+        const result = await pool.query(
+            `SELECT id, code, label, description, sort_order
+             FROM product_category
+             WHERE is_active = TRUE
+             ORDER BY sort_order ASC, label ASC`
+        );
+        return res.status(200).json({ message: "Categories fetched successfully", data: result.rows });
+    } catch (e) {
+        console.log("Error while fetching categories: ", e);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
 export const getProductsByCategory = async (req: Request, res: Response): Promise<Response> => {
-    const validCategories = ['plastic', 'metal', 'steel'];
     const { category } = req.params;
-    const { offset, limit } = req.query;
+    const { offset, limit, search, productType } = req.query;
     const limitValue = Number(limit) > 20 ? 20 : Number(limit) || 20;
     const offsetValue = Number(offset) * limitValue;
 
     try {
-        if (!category || typeof category !== "string" || !validCategories.includes(category))
-            return res.status(400).json({ message: "Invalid category! Category should be either plastic, metal or steel!" });
+        if (!category || typeof category !== "string")
+            return res.status(400).json({ message: "Category is required" });
+
+        // Validate against the product_category table dynamically
+        const categoryCheck = await pool.query(
+            `SELECT id FROM product_category WHERE LOWER(code) = LOWER($1) AND is_active = TRUE`,
+            [category]
+        );
+        if (categoryCheck.rows.length === 0)
+            return res.status(400).json({ message: "Invalid category! Please provide a valid active category." });
+
+        const categoryId = categoryCheck.rows[0].id;
 
         if (offset === undefined || offset === null || isNaN(Number(offset)))
             return res.status(400).json({ message: "Invalid offset value" });
+
+        // Build dynamic filter conditions
+        const filterValues: any[] = [categoryId]; // $1 = category UUID
+        let filterConditions = `category = $1 AND approval_status = 'approved' AND is_active = TRUE`;
+        let paramCount = 2;
+
+        if (search && typeof search === 'string' && search.trim() !== '') {
+            filterConditions += ` AND name ILIKE $${paramCount}`;
+            filterValues.push(`%${search.trim()}%`);
+            paramCount++;
+        }
+
+        if (productType && typeof productType === 'string' && productType.trim() !== '') {
+            filterConditions += ` AND product_type = $${paramCount}`;
+            filterValues.push(productType.trim());
+            paramCount++;
+        }
+
+        const offsetParam = paramCount;
+        const limitParam = paramCount + 1;
+        const queryValues = [...filterValues, offsetValue, limitValue];
 
         const query = `
             SELECT 
@@ -623,6 +668,9 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
                 -- Vendor count (optimized, cast to int)
                 COALESCE(vc.vendor_count, 0)::int AS vendor_count,
 
+                -- Seller count alias for frontend compatibility
+                COALESCE(vc.vendor_count, 0)::int AS seller_count,
+
                 -- Price range (cast to numeric)
                 COALESCE(pr.min_price, 0)::numeric AS min_price,
                 COALESCE(pr.max_price, 0)::numeric AS max_price,
@@ -631,14 +679,12 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
             FROM (
                 SELECT id, name, description, category, product_type
                 FROM products
-                WHERE LOWER(category) = LOWER($1)
-                  AND approval_status = 'approved'
-                  AND is_active = TRUE
+                WHERE ${filterConditions}
                 ORDER BY created_at DESC, id ASC
-                LIMIT $3 OFFSET $2
+                LIMIT $${limitParam} OFFSET $${offsetParam}
             ) p
 
-                        ${approvedSpecificationsJoin}
+            ${approvedSpecificationsJoin}
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -677,10 +723,10 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
             ) pr ON true;
         `;
 
-        const result = await pool.query(query, [category, offsetValue, limitValue]);
+        const result = await pool.query(query, queryValues);
         const countResult = await pool.query(
-            `SELECT COUNT(*)::int AS total_count FROM products WHERE LOWER(category) = LOWER($1) AND approval_status = 'approved' AND is_active = TRUE`,
-            [category]
+            `SELECT COUNT(*)::int AS total_count FROM products WHERE ${filterConditions}`,
+            filterValues
         );
         const totalCount = countResult.rows[0].total_count;
         return res.status(200).json({ message: "Products fetched successfully", totalCount, data: result.rows });

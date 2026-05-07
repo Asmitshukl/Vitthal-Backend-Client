@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts, getVendorProductByIdController, updateVendorProductController, getVendorProductAnalyticsController, getProductReviewsController } from "../Controllers/Product.controller";
+import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, getCategories, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts, getVendorProductByIdController, updateVendorProductController, getVendorProductAnalyticsController, getProductReviewsController } from "../Controllers/Product.controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
@@ -9,6 +9,7 @@ const productRouter = Router();
 
 // Public routes
 productRouter.get("/getAllProducts", getAllProducts);
+productRouter.get("/getCategories", getCategories);
 productRouter.get("/getProductById/:productId", getProductById);
 productRouter.get("/getProductsByCategory/:category", getProductsByCategory);
 productRouter.get("/getProductByName", getProductByName);

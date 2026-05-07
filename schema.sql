@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     description TEXT,
-    category TEXT,
+    category UUID NOT NULL,
     product_type TEXT,
     material TEXT,
     grade TEXT,
@@ -227,7 +227,11 @@ CREATE TABLE IF NOT EXISTS products (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_products_product_type
-        CHECK (product_type IS NULL OR product_type IN ('plastic', 'metal'))
+        CHECK (product_type IS NULL OR product_type IN ('plastic', 'metal')),
+
+    CONSTRAINT fk_products_category
+        FOREIGN KEY (category)
+        REFERENCES product_category(id)
 );
 
 CREATE TABLE IF NOT EXISTS products_images (
