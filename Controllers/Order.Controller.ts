@@ -201,6 +201,115 @@ export const getVendorOrderByIdController = async (req: Request, res: Response):
     }
 }
 
+export const updateOrderStatusController = async (req: Request, res: Response): Promise<Response> => {
+    const authUser = (req as any).user;
+    if (!authUser?.userId || !authUser?.role) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { userId, role } = authUser;
+    if (role !== 'vendor') {
+        return res.status(403).json({ message: "Only vendors can update order status" });
+    }
+
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!id) {
+        return res.status(400).json({ message: "Order ID is required" });
+    }
+
+    if (!status) {
+        return res.status(400).json({ message: "Status is required" });
+    }
+
+    // Validate status
+    const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded', 'handed_over', 'received', 'dispatched'];
+    if (!validStatuses.includes(status.toLowerCase())) {
+        return res.status(400).json({ message: "Invalid status" });
+    }
+
+    try {
+        // First get the vendor_id from the user_id
+        const vendorQuery = `
+            SELECT id FROM vendors WHERE user_id = $1;
+        `;
+        const vendorResult = await pool.query(vendorQuery, [userId]);
+        
+        if (vendorResult.rows.length === 0) {
+            return res.status(404).json({ message: "Vendor not found" });
+        }
+
+        const vendorId = vendorResult.rows[0].id;
+
+        // Check if order belongs to this vendor
+        const orderCheckQuery = `
+            SELECT id FROM orders WHERE id = $1 AND vendor_id = $2;
+        `;
+        const orderCheckResult = await pool.query(orderCheckQuery, [id, vendorId]);
+        
+        if (orderCheckResult.rows.length === 0) {
+            return res.status(404).json({ message: "Order not found or access denied" });
+        }
+
+        // Update order status
+        const updateQuery = `
+            UPDATE orders 
+            SET status = $1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND vendor_id = $3
+            RETURNING id, status, updated_at;
+        `;
+        
+        const result = await pool.query(updateQuery, [status.toLowerCase(), id, vendorId]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Failed to update order" });
+        }
+
+        // Create status history entry for every status change
+        const statusHistoryQuery = `
+            INSERT INTO order_status_history (order_id, status, note, created_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            RETURNING id;
+        `;
+        
+        const statusNotes: Record<string, string> = {
+            'pending': 'Order placed by customer',
+            'processing': 'Order accepted and being processed by vendor',
+            'shipped': 'Order shipped by vendor',
+            'delivered': 'Order delivered to customer',
+            'cancelled': 'Order cancelled by vendor'
+        };
+        
+        await pool.query(statusHistoryQuery, [id, status.toLowerCase(), statusNotes[status.toLowerCase()] || `Status updated to ${status} by vendor`]);
+
+        // Create fulfillment tracking entry for processing, shipped, and delivered statuses
+        if (['processing', 'shipped', 'delivered'].includes(status.toLowerCase())) {
+            const fulfillmentQuery = `
+                INSERT INTO order_fulfillment_tracking (order_id, status, note, created_at)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                RETURNING id;
+            `;
+            
+            const fulfillmentNotes: Record<string, string> = {
+                'processing': 'Order accepted and processing started',
+                'shipped': 'Order dispatched from fulfillment center',
+                'delivered': 'Order successfully delivered to customer'
+            };
+            
+            await pool.query(fulfillmentQuery, [id, status.toLowerCase(), fulfillmentNotes[status.toLowerCase()] || `Order ${status} by vendor`]);
+        }
+
+        return res.status(200).json({ 
+            message: "Order status updated successfully",
+            data: result.rows[0]
+        });
+    } catch (error) {
+        console.error("Error updating order status:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+}
+
 export const getOrderTrackingController = async (req: Request, res: Response): Promise<Response> => {
     const authUser = (req as any).user;
     if (!authUser?.userId || !authUser?.role) {

@@ -967,6 +967,433 @@ export const getRankedVendors = async (req: Request, res: Response): Promise<Res
     }
 };
 
+export const getVendorProductByIdController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { userId, role } = (req as any).user;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can access their products." });
+    }
+
+    try {
+        const vendorResult = await pool.query(
+            `SELECT id, approval_status, is_active, is_blocked FROM vendors WHERE user_id = $1`,
+            [userId]
+        );
+
+        if (vendorResult.rows.length === 0) {
+            return res.status(403).json({ message: "Vendor profile not found." });
+        }
+
+        const vendor = vendorResult.rows[0];
+        const vendorId = vendor.id;
+
+        const query = `
+            SELECT 
+                p.id AS product_id,
+                p.name AS product_name,
+                p.description,
+                p.category,
+                p.product_type,
+                p.material,
+                p.grade,
+                p.application,
+                p.standard,
+                vp.price,
+                vp.moq,
+                vp.stock_quantity,
+                vp.is_active,
+                vp.status,
+                vp.created_at AS vendor_product_created_at,
+                vp.updated_at AS vendor_product_updated_at,
+                ${approvedSpecificationsSelect},
+                COALESCE(
+                    JSON_AGG(
+                        JSONB_BUILD_OBJECT(
+                            'image_url', pImg.image_url,
+                            'is_primary', pImg.is_primary,
+                            'display_order', pImg.display_order
+                        )
+                        ORDER BY pImg.display_order
+                    ) FILTER (WHERE pImg.id IS NOT NULL),
+                    '[]'::json
+                ) AS images
+            FROM vendor_products vp
+            JOIN products p ON vp.product_id = p.id
+            ${approvedSpecificationsJoin}
+            LEFT JOIN products_images pImg ON p.id = pImg.product_id
+            WHERE vp.vendor_id = $1 AND vp.product_id = $2
+            GROUP BY p.id, vp.price, vp.moq, vp.stock_quantity, vp.is_active, vp.status, 
+                     vp.created_at, vp.updated_at, specAgg.specifications
+        `;
+
+        const result = await pool.query(query, [vendorId, productId]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found or you don't have access to this product." });
+        }
+
+        return res.status(200).json({ 
+            message: "Vendor product fetched successfully", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("Error while fetching vendor product:", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const updateVendorProductController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { price, moq, stockQuantity, isActive } = req.body;
+    const { userId, role } = (req as any).user;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (price === undefined || moq === undefined || stockQuantity === undefined || isActive === undefined) {
+        return res.status(400).json({ message: "Price, MOQ, stock quantity, and active status are required" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can update their products." });
+    }
+
+    try {
+        const vendorResult = await pool.query(
+            `SELECT id, approval_status, is_active, is_blocked FROM vendors WHERE user_id = $1`,
+            [userId]
+        );
+
+        if (vendorResult.rows.length === 0) {
+            return res.status(403).json({ message: "Vendor profile not found." });
+        }
+
+        const vendor = vendorResult.rows[0];
+        if (vendor.approval_status !== "approved" || !vendor.is_active || vendor.is_blocked) {
+            return res.status(403).json({ message: "Your vendor account must be approved and active to update products." });
+        }
+
+        const vendorId = vendor.id;
+
+        // Check if the vendor product exists
+        const existingProductResult = await pool.query(
+            `SELECT id FROM vendor_products WHERE vendor_id = $1 AND product_id = $2`,
+            [vendorId, productId]
+        );
+
+        if (existingProductResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found or you don't have access to this product." });
+        }
+
+        // Update the vendor product
+        const updateQuery = `
+            UPDATE vendor_products 
+            SET price = $1, moq = $2, stock_quantity = $3, is_active = $4, updated_at = NOW()
+            WHERE vendor_id = $5 AND product_id = $6
+            RETURNING *
+        `;
+
+        const result = await pool.query(updateQuery, [
+            Number(price),
+            Number(moq),
+            Number(stockQuantity),
+            Boolean(isActive),
+            vendorId,
+            productId
+        ]);
+
+        return res.status(200).json({ 
+            message: "Vendor product updated successfully", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("Error while updating vendor product:", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const getVendorProductAnalyticsController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { userId, role } = (req as any).user;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can access their product analytics." });
+    }
+
+    try {
+        const vendorResult = await pool.query(
+            `SELECT id, approval_status, is_active, is_blocked FROM vendors WHERE user_id = $1`,
+            [userId]
+        );
+
+        if (vendorResult.rows.length === 0) {
+            return res.status(403).json({ message: "Vendor profile not found." });
+        }
+
+        const vendor = vendorResult.rows[0];
+        const vendorId = vendor.id;
+
+        // Get basic analytics
+        const analyticsQuery = `
+            SELECT 
+                vp.price,
+                vp.moq,
+                vp.stock_quantity,
+                vp.is_active,
+                vp.created_at AS vendor_product_created_at,
+                vp.updated_at AS vendor_product_updated_at,
+                p.name AS product_name,
+                p.category,
+                p.product_type,
+                p.rating AS product_rating,
+                p.review_count AS total_reviews,
+                
+                -- Order statistics
+                COALESCE(order_stats.total_orders, 0)::int AS total_orders,
+                COALESCE(order_stats.total_revenue, 0)::numeric AS total_revenue,
+                COALESCE(order_stats.avg_order_value, 0)::numeric AS avg_order_value,
+                COALESCE(order_stats.last_order_date, NULL) AS last_order_date,
+                
+                -- View statistics (simulated - you might want to add a views table)
+                COALESCE(view_stats.total_views, 0)::int AS total_views,
+                COALESCE(view_stats.unique_views, 0)::int AS unique_views,
+                
+                -- Cart statistics
+                COALESCE(cart_stats.cart_additions, 0)::int AS cart_additions,
+                COALESCE(cart_stats.conversion_rate, 0)::numeric AS conversion_rate
+                
+            FROM vendor_products vp
+            JOIN products p ON vp.product_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT 
+                    COUNT(DISTINCT oi.order_id)::int AS total_orders,
+                    COALESCE(SUM(oi.quantity * oi.price), 0)::numeric AS total_revenue,
+                    COALESCE(AVG(oi.quantity * oi.price), 0)::numeric AS avg_order_value,
+                    MAX(o.created_at) AS last_order_date
+                FROM order_items oi
+                JOIN orders o ON oi.order_id = o.id
+                WHERE oi.product_id = vp.product_id 
+                  AND oi.vendor_id = vp.vendor_id
+                  AND o.status NOT IN ('cancelled', 'refunded')
+            ) order_stats ON true
+            
+            LEFT JOIN LATERAL (
+                SELECT 
+                    0::int AS total_views,  -- Placeholder - implement views tracking
+                    0::int AS unique_views   -- Placeholder - implement unique views tracking
+            ) view_stats ON true
+            
+            LEFT JOIN LATERAL (
+                SELECT 
+                    COUNT(DISTINCT c.user_id)::int AS cart_additions,
+                    CASE 
+                        WHEN COUNT(DISTINCT oi.order_id) > 0 
+                        THEN (COUNT(DISTINCT oi.order_id)::numeric / NULLIF(COUNT(DISTINCT c.user_id), 0)) * 100
+                        ELSE 0 
+                    END::numeric AS conversion_rate
+                FROM cart_items ci
+                JOIN carts c ON ci.cart_id = c.id
+                LEFT JOIN order_items oi ON ci.product_id = oi.product_id AND ci.vendor_id = oi.vendor_id
+                WHERE ci.product_id = vp.product_id AND ci.vendor_id = vp.vendor_id
+            ) cart_stats ON true
+            
+            WHERE vp.vendor_id = $1 AND vp.product_id = $2
+        `;
+
+        const analyticsResult = await pool.query(analyticsQuery, [vendorId, productId]);
+
+        if (analyticsResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found or you don't have access to this product." });
+        }
+
+        const analytics = analyticsResult.rows[0];
+
+        // Get monthly sales data for the last 6 months
+        const monthlySalesQuery = `
+            SELECT 
+                DATE_TRUNC('month', o.created_at)::date AS month,
+                COUNT(DISTINCT oi.order_id)::int AS orders_count,
+                COALESCE(SUM(oi.quantity * oi.price), 0)::numeric AS revenue,
+                COALESCE(SUM(oi.quantity), 0)::int AS quantity_sold
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            WHERE oi.product_id = $1 
+              AND oi.vendor_id = $2
+              AND o.status NOT IN ('cancelled', 'refunded')
+              AND o.created_at >= NOW() - INTERVAL '6 months'
+            GROUP BY DATE_TRUNC('month', o.created_at)
+            ORDER BY month DESC
+        `;
+
+        const monthlySalesResult = await pool.query(monthlySalesQuery, [productId, vendorId]);
+
+        // Get recent orders
+        const recentOrdersQuery = `
+            SELECT 
+                o.id AS order_id,
+                o.created_at AS order_date,
+                o.total_amount,
+                o.status AS order_status,
+                oi.quantity,
+                oi.price AS unit_price,
+                oi.quantity * oi.price AS total_price,
+                u.name AS customer_name,
+                u.email AS customer_email
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.id
+            JOIN users u ON o.user_id = u.id
+            WHERE oi.product_id = $1 
+              AND oi.vendor_id = $2
+            ORDER BY o.created_at DESC
+            LIMIT 10
+        `;
+
+        const recentOrdersResult = await pool.query(recentOrdersQuery, [productId, vendorId]);
+
+        return res.status(200).json({ 
+            message: "Vendor product analytics fetched successfully", 
+            data: {
+                ...analytics,
+                monthly_sales: monthlySalesResult.rows,
+                recent_orders: recentOrdersResult.rows
+            }
+        });
+    } catch (error) {
+        console.error("Error while fetching vendor product analytics:", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const getProductReviewsController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { userId, role } = (req as any).user;
+    const { offset = "0", limit = "10" } = req.query;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can access their product reviews." });
+    }
+
+    try {
+        const vendorResult = await pool.query(
+            `SELECT id, approval_status, is_active, is_blocked FROM vendors WHERE user_id = $1`,
+            [userId]
+        );
+
+        if (vendorResult.rows.length === 0) {
+            return res.status(403).json({ message: "Vendor profile not found." });
+        }
+
+        const vendor = vendorResult.rows[0];
+        const vendorId = vendor.id;
+
+        // Check if vendor has access to this product
+        const productAccessResult = await pool.query(
+            `SELECT id FROM vendor_products WHERE vendor_id = $1 AND product_id = $2`,
+            [vendorId, productId]
+        );
+
+        if (productAccessResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found or you don't have access to this product." });
+        }
+
+        const offsetValue = Number(offset) * Number(limit);
+        const limitValue = Math.min(Number(limit), 50); // Max 50 reviews per page
+
+        // Get reviews with pagination
+        const reviewsQuery = `
+            SELECT 
+                oir.id AS review_id,
+                oir.rating,
+                oir.review_title,
+                oir.review_text,
+                oir.created_at AS review_date,
+                u.name AS customer_name,
+                u.email AS customer_email,
+                o.id AS order_id,
+                o.created_at AS order_date,
+                oi.quantity AS purchased_quantity,
+                oi.price AS unit_price,
+                CASE 
+                    WHEN oir.rating >= 5 THEN 'Excellent'
+                    WHEN oir.rating >= 4 THEN 'Good'
+                    WHEN oir.rating >= 3 THEN 'Average'
+                    WHEN oir.rating >= 2 THEN 'Poor'
+                    ELSE 'Very Poor'
+                END AS rating_label
+            FROM order_item_reviews oir
+            JOIN order_items oi ON oir.order_item_id = oi.id
+            JOIN orders o ON oi.order_id = o.id
+            JOIN users u ON oir.user_id = u.id
+            WHERE oi.product_id = $1 
+              AND oi.vendor_id = $2
+            ORDER BY oir.created_at DESC
+            LIMIT $3 OFFSET $4
+        `;
+
+        const reviewsResult = await pool.query(reviewsQuery, [productId, vendorId, limitValue, offsetValue]);
+
+        // Get review statistics
+        const statsQuery = `
+            SELECT 
+                COUNT(*)::int AS total_reviews,
+                COALESCE(AVG(rating), 0)::numeric AS avg_rating,
+                COUNT(CASE WHEN rating = 5 THEN 1 END)::int AS five_star_count,
+                COUNT(CASE WHEN rating = 4 THEN 1 END)::int AS four_star_count,
+                COUNT(CASE WHEN rating = 3 THEN 1 END)::int AS three_star_count,
+                COUNT(CASE WHEN rating = 2 THEN 1 END)::int AS two_star_count,
+                COUNT(CASE WHEN rating = 1 THEN 1 END)::int AS one_star_count
+            FROM order_item_reviews oir
+            JOIN order_items oi ON oir.order_item_id = oi.id
+            WHERE oi.product_id = $1 
+              AND oi.vendor_id = $2
+        `;
+
+        const statsResult = await pool.query(statsQuery, [productId, vendorId]);
+
+        const stats = statsResult.rows[0];
+
+        return res.status(200).json({ 
+            message: "Product reviews fetched successfully", 
+            data: {
+                reviews: reviewsResult.rows,
+                stats: {
+                    total_reviews: stats.total_reviews,
+                    avg_rating: Number(stats.avg_rating).toFixed(1),
+                    rating_distribution: {
+                        5: stats.five_star_count,
+                        4: stats.four_star_count,
+                        3: stats.three_star_count,
+                        2: stats.two_star_count,
+                        1: stats.one_star_count
+                    }
+                },
+                pagination: {
+                    current_page: Number(offset),
+                    per_page: limitValue,
+                    has_more: reviewsResult.rows.length === limitValue
+                }
+            }
+        });
+    } catch (error) {
+        console.error("Error while fetching product reviews:", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
 export const getRelatedProducts = async (req: Request, res: Response): Promise<Response> => {
     const { productId } = req.params;
     if (!productId) {

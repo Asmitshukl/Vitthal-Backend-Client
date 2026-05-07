@@ -236,6 +236,10 @@ CREATE TABLE IF NOT EXISTS products_images (
     image_url TEXT NOT NULL,
     is_primary BOOLEAN NOT NULL DEFAULT FALSE,
     display_order INTEGER NOT NULL DEFAULT 0,
+    is_approved BOOLEAN NOT NULL DEFAULT false,
+    approval_status TEXT NOT NULL DEFAULT 'pending',
+    created_by_user_id UUID,
+    reviewed_by_user_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_products_images_status
         CHECK (approval_status IN ('pending', 'approved', 'rejected')),

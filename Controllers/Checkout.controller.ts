@@ -82,7 +82,7 @@ export const placeOrderController = async (req: Request, res: Response): Promise
                     user_id, vendor_id, cart_id, status, payment_status, total_amount,
                     address_line, city, state, country, pincode, latitude, langitude,
                     source, customer_name, customer_email, customer_phone
-                ) VALUES ($1, $2, $3, 'pending', 'pending', $4, $5, $6, $7, $8, $9, $10, $11, 'client', $12, $13, $14) RETURNING id`,
+                ) VALUES ($1, $2, $3, 'pending', 'confirmed', $4, $5, $6, $7, $8, $9, $10, $11, 'client', $12, $13, $14) RETURNING id`,
                 [
                     userId, vendorId, cartId, totalAmount,
                     address.address, address.city, address.state, address.country,
@@ -93,6 +93,13 @@ export const placeOrderController = async (req: Request, res: Response): Promise
                 ]
             );
             const orderId = orderResult.rows[0].id;
+
+            // Create initial status history entry
+            await pool.query(
+                `INSERT INTO order_status_history (order_id, status, note, created_at)
+                 VALUES ($1, 'pending', 'Order placed by customer', CURRENT_TIMESTAMP)`,
+                [orderId]
+            );
 
             // Insert into order_items table
             for (const item of vendorItems) {

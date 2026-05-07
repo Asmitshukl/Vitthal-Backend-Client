@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts } from "../Controllers/Product.controller";
+import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts, getVendorProductByIdController, updateVendorProductController, getVendorProductAnalyticsController, getProductReviewsController } from "../Controllers/Product.controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
@@ -20,6 +20,10 @@ productRouter.use(authMiddleware);
 productRouter.use(requireApprovedVendor);
 
 productRouter.get("/getVendorProducts", getVendorProductsController);
+productRouter.get("/vendor/product/:productId", getVendorProductByIdController);
+productRouter.put("/vendor/product/:productId", updateVendorProductController);
+productRouter.get("/vendor/product/:productId/analytics", getVendorProductAnalyticsController);
+productRouter.get("/vendor/product/:productId/reviews", getProductReviewsController);
 productRouter.post("/addProduct", addProductController);
 productRouter.post("/addVendorProduct", addVendorProductController);
 productRouter.post("/addProductSpecifications", addProductSpecificationsController);
