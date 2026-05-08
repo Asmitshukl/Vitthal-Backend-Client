@@ -630,55 +630,6 @@ export const getVendorCategoriesController = async (req: Request, res: Response)
     }
 }
 
-export const checkVendorSetupStatus = async (req: Request, res: Response): Promise<Response> => {
-    const { userId, role } = (req as any).user;
-    if (!userId) {
-        return res.status(400).json({ message: "User ID is required!" });
-    }
-
-    if(role !== 'vendor') {
-        return res.status(403).json({ message: "Unauthorized! Only vendors can access their details!" });
-    }
-
-    try{
-        const query = `
-            SELECT 
-                v.id as vendor_exists,
-                v.approval_status,
-                a.id as address_exists,
-                COUNT(vcs.category_id) as category_count
-            FROM users u
-            LEFT JOIN vendors v ON u.id = v.user_id
-            LEFT JOIN addresses a ON u.id = a.user_id
-            LEFT JOIN vendor_categories vcs ON v.id = vcs.vendor_id
-            WHERE u.id = $1 AND u.role = 'vendor'
-            GROUP BY v.id, v.approval_status, a.id
-        `;
-
-        const result = await pool.query(query, [userId]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: "Vendor not found." });
-        }
-
-        const row = result.rows[0];
-        const isSetupComplete = row.vendor_exists !== null && row.address_exists !== null && Number(row.category_count) > 0;
-
-        return res.status(200).json({
-            message: "Setup status fetched successfully",
-            isSetupComplete,
-            hasVendorProfile: row.vendor_exists !== null,
-            hasAddress: row.address_exists !== null,
-            hasCategories: Number(row.category_count) > 0,
-            approvalStatus: row.approval_status || null
-        });
-    }
-    catch (e) {
-        console.error("Error : ", e);
-        return res.status(500).json({ message: 'internal server error' });
-    }
-}
-
 export const getVendorIdStatusController = async (req: Request, res: Response): Promise<Response> => {
     const { userId, role } = (req as any).user || {};
 
