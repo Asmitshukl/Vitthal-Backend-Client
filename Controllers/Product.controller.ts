@@ -1164,6 +1164,49 @@ export const updateVendorProductController = async (req: Request, res: Response)
     }
 };
 
+export const deleteVendorProductController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.params;
+    const { userId, role } = (req as any).user;
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can delete their products." });
+    }
+
+    try {
+        const vendorResult = await pool.query(
+            `SELECT id, approval_status, is_active, is_blocked FROM vendors WHERE user_id = $1`,
+            [userId]
+        );
+
+        if (vendorResult.rows.length === 0) {
+            return res.status(403).json({ message: "Vendor profile not found." });
+        }
+
+        const vendor = vendorResult.rows[0];
+        if (vendor.approval_status !== "approved" || !vendor.is_active || vendor.is_blocked) {
+            return res.status(403).json({ message: "Your vendor account must be approved and active to delete products." });
+        }
+
+        const deleteResult = await pool.query(
+            `DELETE FROM vendor_products WHERE vendor_id = $1 AND product_id = $2 RETURNING *`,
+            [vendor.id, productId]
+        );
+
+        if (deleteResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found or you don't have permission to delete it!" });
+        }
+
+        return res.status(200).json({ message: "Product removed from your catalog successfully" });
+    } catch (error) {
+        console.error("Error deleting vendor product:", error);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
 export const getVendorProductAnalyticsController = async (req: Request, res: Response): Promise<Response> => {
     const { productId } = req.params;
     const { userId, role } = (req as any).user;

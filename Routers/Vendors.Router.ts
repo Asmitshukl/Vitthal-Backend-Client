@@ -1,7 +1,8 @@
 import { Router } from "express";
 
-import { addVendorController, createVendorAddress, getVendorCategoriesController, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, completeVendorSetupController, getVendorIdStatusController } from "../Controllers/Vendors.Controller";
+import { addVendorController, createVendorAddress, getVendorCategoriesController, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, completeVendorSetupController, getVendorIdStatusController, checkVendorSetupStatus } from "../Controllers/Vendors.Controller";
 import { getVendorDashboardController, getVendorAnalyticsController } from "../Controllers/VendorDashboard.Controller";
+import { getVendorProductByIdController, updateVendorProductController, deleteVendorProductController } from "../Controllers/Product.controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
@@ -17,8 +18,12 @@ vendorsRouter.put("/updateVendorAddress", updateVendorAddress);
 
 vendorsRouter.get("/getVendorCategories", getVendorCategoriesController);
 vendorsRouter.get("/getVendorDetails", getVendorDetailsController);
+vendorsRouter.get("/checkSetupStatus", checkVendorSetupStatus);
 vendorsRouter.get("/vendorIdStatus", getVendorIdStatusController);
 vendorsRouter.get("/dashboard", requireApprovedVendor, getVendorDashboardController);
 vendorsRouter.get("/analytics", requireApprovedVendor, getVendorAnalyticsController);
+vendorsRouter.get("/product/:productId", requireApprovedVendor, getVendorProductByIdController);
+vendorsRouter.put("/product/:productId", requireApprovedVendor, updateVendorProductController);
+vendorsRouter.delete("/product/:productId", requireApprovedVendor, deleteVendorProductController);
 
 export default vendorsRouter;
