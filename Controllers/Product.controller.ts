@@ -402,41 +402,55 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
         const offsetValue = Number(offset) * limitValue;
 
         let baseQuery = `
-            SELECT id, name, description, category, product_type
-            FROM products
-            WHERE approval_status = 'approved' AND is_active = TRUE
+            SELECT p.id, p.name, p.description, p.category, p.product_type
+            FROM products p
+            WHERE p.approval_status = 'approved' AND p.is_active = TRUE
         `;
         let countQuery = `
             SELECT COUNT(*)::int AS total_count
-            FROM products
-            WHERE approval_status = 'approved' AND is_active = TRUE
+            FROM products p
+            WHERE p.approval_status = 'approved' AND p.is_active = TRUE
         `;
 
         const values: any[] = [];
         let paramCount = 1;
 
         if (search && typeof search === 'string' && search.trim() !== '') {
-            baseQuery += ` AND name ILIKE $${paramCount}`;
-            countQuery += ` AND name ILIKE $${paramCount}`;
+            baseQuery += ` AND p.name ILIKE $${paramCount}`;
+            countQuery += ` AND p.name ILIKE $${paramCount}`;
             values.push(`%${search.trim()}%`);
             paramCount++;
         }
 
         if (category && typeof category === 'string' && category.trim() !== '') {
-            baseQuery += ` AND LOWER(category) = LOWER($${paramCount})`;
-            countQuery += ` AND LOWER(category) = LOWER($${paramCount})`;
+            baseQuery += ` AND LOWER(pc_filter.code) = LOWER($${paramCount})`;
+            countQuery += ` AND LOWER(pc_filter.code) = LOWER($${paramCount})`;
             values.push(category.trim());
             paramCount++;
         }
 
         if (productType && typeof productType === 'string' && productType.trim() !== '') {
-            baseQuery += ` AND product_type = $${paramCount}`;
-            countQuery += ` AND product_type = $${paramCount}`;
+            baseQuery += ` AND p.product_type = $${paramCount}`;
+            countQuery += ` AND p.product_type = $${paramCount}`;
             values.push(productType.trim());
             paramCount++;
         }
 
-        baseQuery += ` ORDER BY created_at DESC, id ASC LIMIT $${paramCount + 1} OFFSET $${paramCount}`;
+        baseQuery += ` ORDER BY p.created_at DESC, p.id ASC LIMIT $${paramCount + 1} OFFSET $${paramCount}`;
+        
+        // Add category filter join if needed
+        let countQueryWithJoin = countQuery;
+        if (category && typeof category === 'string' && category.trim() !== '') {
+            countQueryWithJoin = `
+                SELECT COUNT(*)::int AS total_count
+                FROM products p
+                LEFT JOIN product_category pc_filter ON p.category = pc_filter.id
+                WHERE p.approval_status = 'approved' AND p.is_active = TRUE
+                AND LOWER(pc_filter.code) = LOWER($1)
+            `;
+            values.splice(values.length - 1, 1); // Remove and re-add category param
+        }
+        
         const queryValues = [...values, offsetValue, limitValue];
 
         const query = `
@@ -444,7 +458,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
                 p.id AS product_id,
                 p.name AS product_name,
                 p.description,
-                p.category,
+                pc.code AS category,
                 p.product_type,
                 ${approvedSpecificationsSelect},
 
@@ -464,6 +478,8 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
             ) p
 
             ${approvedSpecificationsJoin}
+
+            LEFT JOIN product_category pc ON p.category = pc.id
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -525,7 +541,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                 p.id AS product_id,
                 p.name AS product_name,
                 p.description,
-                p.category,
+                pc.code AS category,
                 p.product_type,
                 p.material,
                 p.grade,
@@ -565,6 +581,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
 
             FROM products p
             ${approvedSpecificationsJoin}
+            LEFT JOIN product_category pc ON p.category = pc.id
             LEFT JOIN products_images pImg ON p.id = pImg.product_id
             LEFT JOIN vendor_products vp ON p.id = vp.product_id
             LEFT JOIN vendors v ON vp.vendor_id = v.id
@@ -582,7 +599,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                 AND u.is_active = true
               ))
 
-            GROUP BY p.id, specAgg.specifications;
+            GROUP BY p.id, pc.code, specAgg.specifications;
         `;
         const result = await pool.query(query, [productId]);
 
@@ -658,7 +675,7 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
                 p.id AS product_id,
                 p.name AS product_name,
                 p.description,
-                p.category,
+                pc.code AS category,
                 p.product_type,
                 ${approvedSpecificationsSelect},
 
@@ -685,6 +702,8 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
             ) p
 
             ${approvedSpecificationsJoin}
+
+            LEFT JOIN product_category pc ON p.category = pc.id
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -755,7 +774,7 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
                 p.id AS product_id,
                 p.name AS product_name,
                 p.description,
-                p.category,
+                pc.code AS category,
                 p.product_type,
                 ${approvedSpecificationsSelect},
 
@@ -774,6 +793,8 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
             ) p
 
                         ${approvedSpecificationsJoin}
+
+            LEFT JOIN product_category pc ON p.category = pc.id
 
             LEFT JOIN products_images pImg 
                 ON p.id = pImg.product_id 
