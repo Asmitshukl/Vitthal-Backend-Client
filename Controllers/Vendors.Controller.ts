@@ -1,6 +1,5 @@
 import type { Request, Response } from "express";
 import pool from "../DbConnect";
-import { getVendorApprovalStatusByUserId } from "../Middleware/VendorApprovalMiddleware";
 
 function normalizeRequiredText(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
@@ -630,6 +629,49 @@ export const getVendorCategoriesController = async (req: Request, res: Response)
     }
 }
 
+export const checkVendorSetupStatus = async (req: Request, res: Response): Promise<Response> => {
+    const { userId, role } = (req as any).user;
+    if (!userId) {
+        return res.status(400).json({ message: "User ID is required!" });
+    }
+
+    if (role !== "vendor") {
+        return res.status(403).json({ message: "Unauthorized! Only vendors can access their details!" });
+    }
+
+    try {
+        const query = `
+            SELECT 
+                v.id as vendor_exists,
+                a.id as address_exists
+            FROM users u
+            LEFT JOIN vendors v ON u.id = v.user_id
+            LEFT JOIN addresses a ON u.id = a.user_id
+            WHERE u.id = $1 AND u.role = 'vendor'
+        `;
+
+        const result = await pool.query(query, [userId]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Vendor not found." });
+        }
+
+        const row = result.rows[0];
+        const isSetupComplete = row.vendor_exists !== null && row.address_exists !== null;
+
+        return res.status(200).json({
+            message: "Setup status fetched successfully",
+            isSetupComplete,
+            hasVendorProfile: row.vendor_exists !== null,
+            hasAddress: row.address_exists !== null,
+        });
+    }
+    catch (e) {
+        console.error("Error : ", e);
+        return res.status(500).json({ message: "internal server error" });
+    }
+}
+
 export const getVendorIdStatusController = async (req: Request, res: Response): Promise<Response> => {
     const { userId, role } = (req as any).user || {};
 
@@ -646,12 +688,47 @@ export const getVendorIdStatusController = async (req: Request, res: Response): 
     }
 
     try {
-        const approvalStatus = await getVendorApprovalStatusByUserId(userId);
+        const result = await pool.query(
+            `
+                SELECT
+                    u.id,
+                    u.role,
+                    v.id AS vendor_id,
+                    v.approval_status,
+                    v.is_active,
+                    v.is_blocked
+                FROM users u
+                LEFT JOIN vendors v ON v.user_id = u.id
+                WHERE u.id = $1
+                LIMIT 1
+            `,
+            [userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Vendor user not found." });
+        }
+
+        const row = result.rows[0];
+
+        if (row.role !== "vendor") {
+            return res.status(200).json({
+                id: row.id,
+                role: row.role,
+                vendor_id: row.vendor_id ?? null,
+                approval_status: null,
+                is_active: row.is_active ?? true,
+                is_blocked: row.is_blocked ?? false,
+            });
+        }
 
         return res.status(200).json({
-            id: userId,
-            role: "vendor",
-            approval_status: approvalStatus ?? "pending",
+            id: row.id,
+            role: row.role,
+            vendor_id: row.vendor_id ?? null,
+            approval_status: row.approval_status ?? "pending",
+            is_active: row.is_active ?? true,
+            is_blocked: row.is_blocked ?? false,
         });
     }
     catch (e) {
