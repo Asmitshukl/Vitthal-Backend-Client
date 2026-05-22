@@ -191,6 +191,7 @@ export async function ensureMarketplaceSchema() {
             ADD COLUMN IF NOT EXISTS alternative_number TEXT,
             ADD COLUMN IF NOT EXISTS designation TEXT,
             ADD COLUMN IF NOT EXISTS business_description TEXT,
+            ADD COLUMN IF NOT EXISTS application_number TEXT UNIQUE,
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 

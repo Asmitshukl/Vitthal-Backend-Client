@@ -1,0 +1,132 @@
+import nodemailer from 'nodemailer';
+
+// Configure your email service here
+const transporter = nodemailer.createTransport({
+    service: process.env.EMAIL_SERVICE || 'gmail', // e.g., 'gmail', 'outlook', etc.
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD, // or app-specific password
+    },
+});
+
+interface EmailPayload {
+    to: string;
+    subject: string;
+    htmlContent: string;
+    textContent?: string;
+}
+
+interface EmailResult {
+    success: boolean;
+    messageId?: string;
+    error?: string;
+}
+
+/**
+ * Send an email using nodemailer
+ * @param payload - Email configuration and content
+ * @returns Result of the email send operation
+ */
+export async function sendEmail(payload: EmailPayload): Promise<EmailResult> {
+    try {
+        // Verify transporter connection on first use
+        if (!transporter.verify) {
+            return {
+                success: false,
+                error: 'Email transporter is not properly configured',
+            };
+        }
+
+        const mailOptions = {
+            from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
+            to: payload.to,
+            subject: payload.subject,
+            html: payload.htmlContent,
+            text: payload.textContent || stripHtml(payload.htmlContent),
+            replyTo: process.env.EMAIL_REPLY_TO || process.env.EMAIL_USER,
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+
+        console.log(`Email sent successfully to ${payload.to}. Message ID: ${info.messageId}`);
+
+        return {
+            success: true,
+            messageId: info.messageId,
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+        console.error(`Failed to send email to ${payload.to}: ${errorMessage}`);
+
+        return {
+            success: false,
+            error: errorMessage,
+        };
+    }
+}
+
+/**
+ * Send emails in batch with rate limiting to avoid overwhelming the service
+ * @param payloads - Array of email configurations
+ * @param delayMs - Delay between each email send in milliseconds (default: 100)
+ * @returns Array of results for each email
+ */
+export async function sendEmailBatch(payloads: EmailPayload[], delayMs: number = 100): Promise<EmailResult[]> {
+    const results: EmailResult[] = [];
+
+    for (const payload of payloads) {
+        const result = await sendEmail(payload);
+        results.push(result);
+
+        // Add delay between emails to avoid rate limiting
+        if (payloads.indexOf(payload) < payloads.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+
+    return results;
+}
+
+/**
+ * Verify email transporter configuration
+ * @returns true if transporter is properly configured, false otherwise
+ */
+export async function verifyEmailConfiguration(): Promise<boolean> {
+    try {
+        if (!transporter.verify) {
+            console.error('Email transporter verify method not available');
+            return false;
+        }
+        await transporter.verify();
+        console.log('Email service configured successfully');
+        return true;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Email configuration verification failed: ${errorMessage}`);
+        return false;
+    }
+}
+
+/**
+ * Strip HTML tags from a string (for plain text fallback)
+ * @param html - HTML string
+ * @returns Plain text without HTML tags
+ */
+function stripHtml(html: string): string {
+    return html
+        .replace(/<[^>]*>/g, '') // Remove HTML tags
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .trim();
+}
+
+// Email service configuration export
+export const emailConfig = {
+    service: process.env.EMAIL_SERVICE || 'gmail',
+    from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
+    replyTo: process.env.EMAIL_REPLY_TO || process.env.EMAIL_USER,
+};

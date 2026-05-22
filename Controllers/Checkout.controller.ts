@@ -27,7 +27,7 @@ export const placeOrderController = async (req: Request, res: Response): Promise
 
         // 2. Fetch user's cart and cart_items
         const cartQuery = await pool.query(
-            `SELECT id FROM carts WHERE user_id = $1 AND status = 'active'`,
+            `SELECT id FROM carts WHERE user_id = $1 AND status = 'active' AND cart_type = 'direct'`,
             [userId]
         );
         if (cartQuery.rows.length === 0) {
@@ -81,8 +81,8 @@ export const placeOrderController = async (req: Request, res: Response): Promise
                 `INSERT INTO orders (
                     user_id, vendor_id, cart_id, status, payment_status, total_amount,
                     address_line, city, state, country, pincode, latitude, langitude,
-                    source, customer_name, customer_email, customer_phone
-                ) VALUES ($1, $2, $3, 'pending', 'confirmed', $4, $5, $6, $7, $8, $9, $10, $11, 'client', $12, $13, $14) RETURNING id`,
+                    source, order_type, customer_name, customer_email, customer_phone
+                ) VALUES ($1, $2, $3, 'pending', 'confirmed', $4, $5, $6, $7, $8, $9, $10, $11, 'client', 'direct', $12, $13, $14) RETURNING id`,
                 [
                     userId, vendorId, cartId, totalAmount,
                     address.address, address.city, address.state, address.country,

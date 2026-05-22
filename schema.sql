@@ -51,6 +51,37 @@ BEGIN
     END IF;
 END$$;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'cart_type') THEN
+        CREATE TYPE cart_type AS ENUM ('direct', 'quotation');
+    END IF;
+END$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quotation_status') THEN
+        CREATE TYPE quotation_status AS ENUM (
+            'pending_vendor',
+            'vendor_offered',
+            'vendor_countered',
+            'client_countered',
+            'client_accepted',
+            'client_rejected',
+            'vendor_rejected',
+            'cancelled',
+            'expired'
+        );
+    END IF;
+END$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quotation_message_action') THEN
+        CREATE TYPE quotation_message_action AS ENUM ('request', 'offer', 'counter', 'accept', 'reject', 'note');
+    END IF;
+END$$;
+
 -- ================================
 -- AUTHENTICATION LAYER
 -- ================================
@@ -89,6 +120,7 @@ CREATE TABLE IF NOT EXISTS vendors (
     credit_cycle TEXT,
     minimum_commision_percentage INTEGER DEFAULT 0,
     maximum_commision_percentage INTEGER DEFAULT 0,
+    application_number TEXT UNIQUE,
     rating NUMERIC(2,1) NOT NULL DEFAULT 0 CHECK (rating >= 0 AND rating <= 5),
     review_count INTEGER NOT NULL DEFAULT 0,
     is_approved BOOLEAN NOT NULL DEFAULT FALSE,
@@ -272,6 +304,8 @@ CREATE TABLE IF NOT EXISTS vendor_products (
     price NUMERIC(12,2) NOT NULL CHECK (price >= 0),
     moq INTEGER NOT NULL CHECK (moq > 0),
     stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
+    quotation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    quotation_min_qty INTEGER CHECK (quotation_min_qty > 0),
     commision_percentage INTEGER DEFAULT 0 CHECK (commision_percentage >= 0 AND commision_percentage <= 100),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     status vendor_product_status NOT NULL DEFAULT 'active',
@@ -289,7 +323,7 @@ CREATE TABLE IF NOT EXISTS vendor_products (
         ON DELETE CASCADE
 );
 
-CREATE TABLE product_specification(
+CREATE TABLE IF NOT EXISTS product_specification(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     product_id UUID NOT NULL,
@@ -328,7 +362,7 @@ CREATE TABLE product_specification(
 CREATE INDEX IF NOT EXISTS idx_product_specification_product_id ON product_specification(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_specification_status ON product_specification(approval_status);
 
-CREATE TABLE addresses(
+CREATE TABLE IF NOT EXISTS addresses(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID UNIQUE NOT NULL,
     address TEXT NOT NULL,
@@ -346,7 +380,7 @@ CREATE TABLE addresses(
         ON DELETE CASCADE
 );
 
-CREATE TABLE client(
+CREATE TABLE IF NOT EXISTS client(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL UNIQUE,
     phone TEXT,
@@ -358,7 +392,7 @@ CREATE TABLE client(
         ON DELETE CASCADE
 );
 
-CREATE TABLE wishlists (
+CREATE TABLE IF NOT EXISTS wishlists (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
@@ -370,7 +404,7 @@ CREATE TABLE wishlists (
         ON DELETE CASCADE
 );
 
-CREATE TABLE wishlist_items (
+CREATE TABLE IF NOT EXISTS wishlist_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     wishlist_id UUID NOT NULL,
     product_id UUID NOT NULL,
@@ -392,7 +426,7 @@ CREATE TABLE wishlist_items (
         ON DELETE SET NULL
 );
 
-    CREATE TABLE abandoned_reminder_logs (
+    CREATE TABLE IF NOT EXISTS abandoned_reminder_logs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID NOT NULL,
         source_type TEXT NOT NULL CHECK (source_type IN ('cart', 'wishlist')),
@@ -408,7 +442,7 @@ CREATE TABLE wishlist_items (
         ON DELETE CASCADE
     );
 
-CREATE TABLE fulfillment_centers(
+CREATE TABLE IF NOT EXISTS fulfillment_centers(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
     name TEXT NOT NULL,
@@ -434,10 +468,11 @@ CREATE TABLE fulfillment_centers(
 -- ================================
 
 --cart : 
-CREATE TABLE carts (
+CREATE TABLE IF NOT EXISTS carts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    user_id UUID NOT NULL UNIQUE, -- ensures 1 cart per user (for now)
+    user_id UUID NOT NULL,
+    cart_type cart_type NOT NULL DEFAULT 'direct',
 
     status TEXT NOT NULL DEFAULT 'active', 
     -- future: active, converted, abandoned, saved
@@ -453,8 +488,11 @@ CREATE TABLE carts (
         ON DELETE CASCADE
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carts_user_type_status
+    ON carts(user_id, cart_type, status);
+
 --cart_items : 
-CREATE TABLE cart_items (
+CREATE TABLE IF NOT EXISTS cart_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     cart_id UUID NOT NULL,
@@ -490,7 +528,7 @@ CREATE TABLE cart_items (
 -- ================================
 -- ORDERS
 -- ================================
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     user_id UUID NOT NULL,
@@ -503,6 +541,9 @@ CREATE TABLE orders (
 
     payment_status TEXT DEFAULT 'pending',
     -- pending, paid, failed
+
+    order_type TEXT NOT NULL DEFAULT 'direct',
+    -- direct, quotation
 
     total_amount NUMERIC(12,2) NOT NULL,
     source TEXT NOT NULL DEFAULT 'client',
@@ -528,6 +569,84 @@ CREATE TABLE orders (
     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users(id),
     CONSTRAINT fk_orders_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id),
     CONSTRAINT fk_orders_cart FOREIGN KEY (cart_id) REFERENCES carts(id)
+);
+
+-- ================================
+-- QUOTATION REQUESTS (CLIENT <-> VENDOR)
+-- ================================
+CREATE TABLE IF NOT EXISTS quotation_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    user_id UUID NOT NULL,
+    vendor_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+
+    requested_quantity INTEGER NOT NULL CHECK (requested_quantity > 0),
+    requested_price NUMERIC(12,2) CHECK (requested_price >= 0),
+
+    status quotation_status NOT NULL DEFAULT 'pending_vendor',
+    request_note TEXT,
+
+    buyer_city TEXT,
+    buyer_state TEXT,
+    buyer_country TEXT,
+    buyer_pincode VARCHAR(6),
+
+    current_offer_price NUMERIC(12,2) CHECK (current_offer_price >= 0),
+    current_offer_quantity INTEGER CHECK (current_offer_quantity > 0),
+    current_offer_by TEXT,
+
+    accepted_price NUMERIC(12,2) CHECK (accepted_price >= 0),
+    accepted_quantity INTEGER CHECK (accepted_quantity > 0),
+
+    rejection_reason TEXT,
+    order_id UUID,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_quotation_requests_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_quotation_requests_vendor
+        FOREIGN KEY (vendor_id)
+        REFERENCES vendors(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_quotation_requests_product
+        FOREIGN KEY (product_id)
+        REFERENCES products(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_quotation_requests_order
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE SET NULL,
+    CONSTRAINT chk_quotation_offer_by
+        CHECK (current_offer_by IS NULL OR current_offer_by IN ('client', 'vendor'))
+);
+
+CREATE TABLE IF NOT EXISTS quotation_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    quotation_id UUID NOT NULL,
+    sender_user_id UUID NOT NULL,
+    sender_role TEXT NOT NULL,
+    action quotation_message_action NOT NULL,
+    offer_price NUMERIC(12,2) CHECK (offer_price >= 0),
+    offer_quantity INTEGER CHECK (offer_quantity > 0),
+    note TEXT,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_quotation_messages_quotation
+        FOREIGN KEY (quotation_id)
+        REFERENCES quotation_requests(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_quotation_messages_sender
+        FOREIGN KEY (sender_user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT chk_quotation_sender_role
+        CHECK (sender_role IN ('client', 'vendor'))
 );
 
 -- cart_items : 
@@ -574,7 +693,7 @@ CREATE TABLE IF NOT EXISTS order_status_history(
         ON DELETE CASCADE
 );
 
-CREATE TABLE order_fulfillment_tracking (
+CREATE TABLE IF NOT EXISTS order_fulfillment_tracking (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     order_id UUID NOT NULL,
@@ -666,6 +785,96 @@ CREATE TABLE IF NOT EXISTS vendor_reviews (
 );
 
 -- ================================
+-- DYNAMIC MIGRATIONS & ALTERATIONS
+-- ================================
+
+-- Safely alter users
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS OTP TEXT,
+    ADD COLUMN IF NOT EXISTS OTP_Expiry TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS refresh_token TEXT,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter products
+ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS material TEXT,
+    ADD COLUMN IF NOT EXISTS grade TEXT,
+    ADD COLUMN IF NOT EXISTS application TEXT,
+    ADD COLUMN IF NOT EXISTS standard TEXT,
+    ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'approved',
+    ADD COLUMN IF NOT EXISTS approval_notes TEXT,
+    ADD COLUMN IF NOT EXISTS created_by_user_id UUID,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter vendors
+ALTER TABLE vendors
+    ADD COLUMN IF NOT EXISTS user_id UUID,
+    ADD COLUMN IF NOT EXISTS company_name TEXT,
+    ADD COLUMN IF NOT EXISTS gst_number TEXT,
+    ADD COLUMN IF NOT EXISTS gst_certificate_link TEXT,
+    ADD COLUMN IF NOT EXISTS business_type TEXT,
+    ADD COLUMN IF NOT EXISTS company_website TEXT,
+    ADD COLUMN IF NOT EXISTS phone TEXT,
+    ADD COLUMN IF NOT EXISTS alternative_number TEXT,
+    ADD COLUMN IF NOT EXISTS designation TEXT,
+    ADD COLUMN IF NOT EXISTS business_description TEXT,
+    ADD COLUMN IF NOT EXISTS credit_cycle TEXT,
+    ADD COLUMN IF NOT EXISTS minimum_commision_percentage INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS maximum_commision_percentage INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS rating NUMERIC(2,1) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS review_count INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS application_number TEXT UNIQUE,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS approval_status vendor_approval_status NOT NULL DEFAULT 'pending',
+    ADD COLUMN IF NOT EXISTS approval_notes TEXT,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter vendor_products
+ALTER TABLE vendor_products
+    ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS commision_percentage INTEGER DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS quotation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS quotation_min_qty INTEGER,
+    ADD COLUMN IF NOT EXISTS status vendor_product_status NOT NULL DEFAULT 'active',
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter orders
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'client',
+    ADD COLUMN IF NOT EXISTS order_reference TEXT,
+    ADD COLUMN IF NOT EXISTS order_notes TEXT,
+    ADD COLUMN IF NOT EXISTS customer_name TEXT,
+    ADD COLUMN IF NOT EXISTS customer_email TEXT,
+    ADD COLUMN IF NOT EXISTS customer_phone TEXT,
+    ADD COLUMN IF NOT EXISTS created_by_admin_id TEXT,
+    ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'pending',
+    ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'direct',
+    ADD COLUMN IF NOT EXISTS cart_id UUID,
+    ADD COLUMN IF NOT EXISTS address_line TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS city TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS pincode VARCHAR(6) NOT NULL DEFAULT '000000',
+    ADD COLUMN IF NOT EXISTS latitude TEXT NOT NULL DEFAULT '0',
+    ADD COLUMN IF NOT EXISTS langitude TEXT NOT NULL DEFAULT '0',
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter carts
+ALTER TABLE carts
+    ADD COLUMN IF NOT EXISTS cart_type cart_type NOT NULL DEFAULT 'direct';
+
+-- ================================
 -- INDEXES
 -- ================================
 
@@ -683,6 +892,8 @@ CREATE INDEX IF NOT EXISTS idx_vendor_products_status ON vendor_products(status)
 --cart indexes
 CREATE INDEX IF NOT EXISTS idx_cart_items_cart_id ON cart_items(cart_id);
 CREATE INDEX IF NOT EXISTS idx_cart_items_product_id ON cart_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_carts_user_id ON carts(user_id);
+CREATE INDEX IF NOT EXISTS idx_carts_user_type ON carts(user_id, cart_type);
 CREATE INDEX IF NOT EXISTS idx_wishlists_user_id ON wishlists(user_id);
 CREATE INDEX IF NOT EXISTS idx_wishlist_items_wishlist_id ON wishlist_items(wishlist_id);
 CREATE INDEX IF NOT EXISTS idx_wishlist_items_product_id ON wishlist_items(product_id);
@@ -702,3 +913,100 @@ CREATE INDEX IF NOT EXISTS idx_order_item_reviews_vendor_id ON order_item_review
 CREATE INDEX IF NOT EXISTS idx_vendor_reviews_order_id ON vendor_reviews(order_id);
 CREATE INDEX IF NOT EXISTS idx_vendor_reviews_user_id ON vendor_reviews(user_id);
 CREATE INDEX IF NOT EXISTS idx_vendor_reviews_vendor_id ON vendor_reviews(vendor_id);
+
+-- quotation indexes
+CREATE INDEX IF NOT EXISTS idx_quotation_requests_vendor_id ON quotation_requests(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_quotation_requests_user_id ON quotation_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_quotation_requests_status ON quotation_requests(status);
+CREATE INDEX IF NOT EXISTS idx_quotation_requests_product_id ON quotation_requests(product_id);
+CREATE INDEX IF NOT EXISTS idx_quotation_messages_quotation_id ON quotation_messages(quotation_id, created_at ASC);
+
+-- ================================
+-- VENDOR COMMUNICATION & QUOTATIONS
+-- ================================
+
+CREATE TABLE IF NOT EXISTS vendor_chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vendor_id UUID NOT NULL,
+    sender_user_id UUID NOT NULL,
+    sender_role TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_vendor_chat_messages_vendor
+        FOREIGN KEY (vendor_id)
+        REFERENCES vendors(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_vendor_chat_messages_sender
+        FOREIGN KEY (sender_user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT chk_vendor_chat_sender_role
+        CHECK (sender_role IN ('vendor', 'admin', 'super_admin'))
+);
+
+CREATE TABLE IF NOT EXISTS vendor_quotations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    quotation_number TEXT NOT NULL UNIQUE,
+    vendor_id UUID NOT NULL,
+    created_by_admin_id UUID NOT NULL,
+    sent_to_email CITEXT NOT NULL,
+    title TEXT NOT NULL,
+    quantity NUMERIC(12,2) NOT NULL CHECK (quantity > 0),
+    unit TEXT NOT NULL,
+    target_price NUMERIC(12,2) CHECK (target_price >= 0),
+    requested_moq INTEGER CHECK (requested_moq > 0),
+    request_notes TEXT,
+    validity_date TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'sent',
+    vendor_price NUMERIC(12,2) CHECK (vendor_price >= 0),
+    vendor_moq INTEGER CHECK (vendor_moq > 0),
+    vendor_notes TEXT,
+    admin_signature_data TEXT NOT NULL,
+    vendor_signature_data TEXT,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_expires_at TIMESTAMPTZ NOT NULL,
+    vendor_opened_at TIMESTAMPTZ,
+    vendor_responded_at TIMESTAMPTZ,
+    vendor_response_ip TEXT,
+    vendor_response_user_agent TEXT,
+    admin_reviewed_at TIMESTAMPTZ,
+    reviewed_by_admin_id UUID,
+    admin_review_notes TEXT,
+    vendor_rejection_reason TEXT,
+    email_sent_at TIMESTAMPTZ,
+    email_last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_vendor_quotations_vendor
+        FOREIGN KEY (vendor_id)
+        REFERENCES vendors(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_vendor_quotations_admin
+        FOREIGN KEY (created_by_admin_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_vendor_quotations_reviewed_by_admin
+        FOREIGN KEY (reviewed_by_admin_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT chk_vendor_quotation_status
+        CHECK (status IN ('sent', 'vendor_opened', 'vendor_approved', 'vendor_rejected', 'admin_approved', 'admin_rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_vendor_chat_messages_vendor_id
+    ON vendor_chat_messages(vendor_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_vendor_chat_messages_is_read
+    ON vendor_chat_messages(vendor_id, is_read);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_quotations_number_unique
+    ON vendor_quotations(quotation_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_quotations_token_hash_unique
+    ON vendor_quotations(token_hash);
+CREATE INDEX IF NOT EXISTS idx_vendor_quotations_vendor_id
+    ON vendor_quotations(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_quotations_created_by_admin_id
+    ON vendor_quotations(created_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_quotations_reviewed_by_admin_id
+    ON vendor_quotations(reviewed_by_admin_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_quotations_status
+    ON vendor_quotations(status);

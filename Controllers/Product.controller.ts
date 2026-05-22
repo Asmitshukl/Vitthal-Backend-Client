@@ -244,11 +244,15 @@ export const addProductController = async (req: Request, res: Response): Promise
 }
 
 export const addVendorProductController = async (req: Request, res: Response): Promise<Response> => {
-    const { productId, price, moq, stockQuantity } = req.body;
+    const { productId, price, moq, stockQuantity, quotationEnabled, quotationMinQty } = req.body;
     const { userId, role } = (req as any).user;
 
     if (!productId || price === undefined || !moq || stockQuantity === undefined) {
         return res.status(400).json({ message: "Product ID, price, moq, and stockQuantity are required" });
+    }
+
+    if (Boolean(quotationEnabled) && (quotationMinQty === undefined || quotationMinQty === null || Number(quotationMinQty) < 1)) {
+        return res.status(400).json({ message: "Quotation minimum quantity is required when quotation is enabled" });
     }
 
     try {
@@ -279,12 +283,17 @@ export const addVendorProductController = async (req: Request, res: Response): P
         const vendorId = vendor.id;
 
         const query = `
-            INSERT INTO vendor_products (product_id, vendor_id, price, moq, stock_quantity) 
-            VALUES ($1, $2, $3, $4, $5) 
-            ON CONFLICT (vendor_id, product_id) 
-            DO UPDATE SET price = EXCLUDED.price, moq = EXCLUDED.moq, stock_quantity = EXCLUDED.stock_quantity
+            INSERT INTO vendor_products (product_id, vendor_id, price, moq, stock_quantity, quotation_enabled, quotation_min_qty)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (vendor_id, product_id)
+            DO UPDATE SET
+                price = EXCLUDED.price,
+                moq = EXCLUDED.moq,
+                stock_quantity = EXCLUDED.stock_quantity,
+                quotation_enabled = EXCLUDED.quotation_enabled,
+                quotation_min_qty = EXCLUDED.quotation_min_qty
             RETURNING *`;
-        const values = [productId, vendorId, price, moq, stockQuantity];
+        const values = [productId, vendorId, price, moq, stockQuantity, Boolean(quotationEnabled), quotationMinQty ?? null];
         const result = await pool.query(query, values);
         return res.status(201).json({ message: "Vendor product details saved successfully", result: result.rows[0] });
     }
@@ -423,8 +432,20 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
         }
 
         if (category && typeof category === 'string' && category.trim() !== '') {
-            baseQuery += ` AND LOWER(pc_filter.code) = LOWER($${paramCount})`;
-            countQuery += ` AND LOWER(pc_filter.code) = LOWER($${paramCount})`;
+            baseQuery += ` AND EXISTS (
+                SELECT 1
+                FROM product_category pc_filter
+                WHERE pc_filter.is_active = TRUE
+                  AND LOWER(pc_filter.code) = LOWER($${paramCount})
+                  AND (p.category::text = pc_filter.id::text OR p.category::text = pc_filter.code)
+            )`;
+            countQuery += ` AND EXISTS (
+                SELECT 1
+                FROM product_category pc_filter
+                WHERE pc_filter.is_active = TRUE
+                  AND LOWER(pc_filter.code) = LOWER($${paramCount})
+                  AND (p.category::text = pc_filter.id::text OR p.category::text = pc_filter.code)
+            )`;
             values.push(category.trim());
             paramCount++;
         }
@@ -444,9 +465,14 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
             countQueryWithJoin = `
                 SELECT COUNT(*)::int AS total_count
                 FROM products p
-                LEFT JOIN product_category pc_filter ON p.category = pc_filter.id
                 WHERE p.approval_status = 'approved' AND p.is_active = TRUE
-                AND LOWER(pc_filter.code) = LOWER($1)
+                AND EXISTS (
+                    SELECT 1
+                    FROM product_category pc_filter
+                    WHERE pc_filter.is_active = TRUE
+                      AND LOWER(pc_filter.code) = LOWER($1)
+                      AND (p.category::text = pc_filter.id::text OR p.category::text = pc_filter.code)
+                )
             `;
             values.splice(values.length - 1, 1); // Remove and re-add category param
         }
@@ -479,7 +505,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
 
             ${approvedSpecificationsJoin}
 
-            LEFT JOIN product_category pc ON p.category = pc.id
+            LEFT JOIN product_category pc ON (p.category::text = pc.id::text OR p.category::text = pc.code)
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -571,6 +597,8 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
                         'price', vp.price,
                         'moq', vp.moq,
                         'stock_quantity', vp.stock_quantity,
+                        'quotation_enabled', vp.quotation_enabled,
+                        'quotation_min_qty', vp.quotation_min_qty,
                         'rating', v.rating,
                         'review_count', v.review_count,
                         'latitude', va.latitude,
@@ -581,7 +609,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
 
             FROM products p
             ${approvedSpecificationsJoin}
-            LEFT JOIN product_category pc ON p.category = pc.id
+            LEFT JOIN product_category pc ON (p.category::text = pc.id::text OR p.category::text = pc.code)
             LEFT JOIN products_images pImg ON p.id = pImg.product_id
             LEFT JOIN vendor_products vp ON p.id = vp.product_id
             LEFT JOIN vendors v ON vp.vendor_id = v.id
@@ -644,14 +672,18 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
         if (categoryCheck.rows.length === 0)
             return res.status(400).json({ message: "Invalid category! Please provide a valid active category." });
 
-        const categoryId = categoryCheck.rows[0].id;
-
         if (offset === undefined || offset === null || isNaN(Number(offset)))
             return res.status(400).json({ message: "Invalid offset value" });
 
         // Build dynamic filter conditions
-        const filterValues: any[] = [categoryId]; // $1 = category UUID
-        let filterConditions = `category = $1 AND approval_status = 'approved' AND is_active = TRUE`;
+        const filterValues: any[] = [category.trim()];
+        let filterConditions = `EXISTS (
+            SELECT 1
+            FROM product_category pc
+            WHERE pc.is_active = TRUE
+              AND LOWER(pc.code) = LOWER($1)
+              AND (category::text = pc.id::text OR category::text = pc.code)
+        ) AND approval_status = 'approved' AND is_active = TRUE`;
         let paramCount = 2;
 
         if (search && typeof search === 'string' && search.trim() !== '') {
@@ -703,7 +735,7 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
 
             ${approvedSpecificationsJoin}
 
-            LEFT JOIN product_category pc ON p.category = pc.id
+            LEFT JOIN product_category pc ON (p.category::text = pc.id::text OR p.category::text = pc.code)
 
             -- Primary image (no duplication)
             LEFT JOIN products_images pImg 
@@ -794,7 +826,7 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
 
                         ${approvedSpecificationsJoin}
 
-            LEFT JOIN product_category pc ON p.category = pc.id
+            LEFT JOIN product_category pc ON (p.category::text = pc.id::text OR p.category::text = pc.code)
 
             LEFT JOIN products_images pImg 
                 ON p.id = pImg.product_id 
@@ -882,8 +914,21 @@ export const getVendorProductsController = async (req: Request, res: Response): 
         }
 
         if (category && typeof category === 'string' && category.trim() !== '') {
+            const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+            let categoryId = category.trim();
+            if (!uuidRegex.test(categoryId)) {
+                const catCheck = await pool.query(
+                    `SELECT id FROM product_category WHERE LOWER(code) = LOWER($1)`,
+                    [categoryId]
+                );
+                if (catCheck.rows.length > 0) {
+                    categoryId = catCheck.rows[0].id;
+                } else {
+                    categoryId = "00000000-0000-0000-0000-000000000000";
+                }
+            }
             query += ` AND p.category = $${paramCount}`;
-            values.push(category.trim());
+            values.push(categoryId);
             paramCount++;
         }
 
@@ -943,6 +988,8 @@ export const getRankedVendors = async (req: Request, res: Response): Promise<Res
                 vp.price,
                 vp.moq,
                 vp.stock_quantity,
+                vp.quotation_enabled,
+                vp.quotation_min_qty,
                 v.rating,
                 v.review_count,
                 va.latitude,
@@ -977,6 +1024,8 @@ export const getRankedVendors = async (req: Request, res: Response): Promise<Res
                 price,
                 moq: row.moq,
                 stock_quantity: row.stock_quantity,
+                quotation_enabled: Boolean(row.quotation_enabled),
+                quotation_min_qty: row.quotation_min_qty,
                 rating,
                 review_count: reviewCount,
                 latitude: vendorLat,
@@ -1073,6 +1122,8 @@ export const getVendorProductByIdController = async (req: Request, res: Response
                 vp.price,
                 vp.moq,
                 vp.stock_quantity,
+                vp.quotation_enabled,
+                vp.quotation_min_qty,
                 vp.is_active,
                 vp.status,
                 vp.created_at AS vendor_product_created_at,
@@ -1094,7 +1145,7 @@ export const getVendorProductByIdController = async (req: Request, res: Response
             ${approvedSpecificationsJoin}
             LEFT JOIN products_images pImg ON p.id = pImg.product_id
             WHERE vp.vendor_id = $1 AND vp.product_id = $2
-            GROUP BY p.id, vp.price, vp.moq, vp.stock_quantity, vp.is_active, vp.status, 
+            GROUP BY p.id, vp.price, vp.moq, vp.stock_quantity, vp.quotation_enabled, vp.quotation_min_qty, vp.is_active, vp.status,
                      vp.created_at, vp.updated_at, specAgg.specifications
         `;
 
@@ -1116,15 +1167,19 @@ export const getVendorProductByIdController = async (req: Request, res: Response
 
 export const updateVendorProductController = async (req: Request, res: Response): Promise<Response> => {
     const { productId } = req.params;
-    const { price, moq, stockQuantity, isActive } = req.body;
+    const { price, moq, stockQuantity, isActive, quotationEnabled, quotationMinQty } = req.body;
     const { userId, role } = (req as any).user;
 
     if (!productId) {
         return res.status(400).json({ message: "Product ID is required" });
     }
 
-    if (price === undefined || moq === undefined || stockQuantity === undefined || isActive === undefined) {
-        return res.status(400).json({ message: "Price, MOQ, stock quantity, and active status are required" });
+    if (price === undefined || moq === undefined || stockQuantity === undefined || isActive === undefined || quotationEnabled === undefined) {
+        return res.status(400).json({ message: "Price, MOQ, stock quantity, active status, and quotation enabled are required" });
+    }
+
+    if (Boolean(quotationEnabled) && (quotationMinQty === undefined || quotationMinQty === null || Number(quotationMinQty) < 1)) {
+        return res.status(400).json({ message: "Quotation minimum quantity is required when quotation is enabled" });
     }
 
     if (role !== "vendor") {
@@ -1161,16 +1216,23 @@ export const updateVendorProductController = async (req: Request, res: Response)
         // Update the vendor product
         const updateQuery = `
             UPDATE vendor_products 
-            SET price = $1, moq = $2, stock_quantity = $3, is_active = $4, updated_at = NOW()
-            WHERE vendor_id = $5 AND product_id = $6
+            SET price = $1,
+                moq = $2,
+                stock_quantity = $3,
+                is_active = $4,
+                quotation_enabled = $5,
+                quotation_min_qty = $6,
+                updated_at = NOW()
+            WHERE vendor_id = $7 AND product_id = $8
             RETURNING *
         `;
-
         const result = await pool.query(updateQuery, [
             Number(price),
             Number(moq),
             Number(stockQuantity),
             Boolean(isActive),
+            Boolean(quotationEnabled),
+            quotationMinQty ?? null,
             vendorId,
             productId
         ]);

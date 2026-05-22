@@ -59,19 +59,21 @@ export const addVendorController = async (req: Request, res: Response): Promise<
             return res.status(409).json({ message: "This GST number is already registered with another vendor." });
         }
 
+        const appNumber = `APP-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(1000 + Math.random() * 9000)}`;
         const result = await pool.query(
             `
-                INSERT INTO vendors (user_id, phone, gst_number, company_name, approval_status, approval_notes)
-                VALUES ($1, $2, $3, $4, 'pending', 'Awaiting admin approval')
+                INSERT INTO vendors (user_id, phone, gst_number, company_name, approval_status, approval_notes, application_number)
+                VALUES ($1, $2, $3, $4, 'pending', 'Awaiting admin approval', $5)
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     phone = EXCLUDED.phone,
                     gst_number = EXCLUDED.gst_number,
                     company_name = EXCLUDED.company_name,
+                    application_number = COALESCE(vendors.application_number, EXCLUDED.application_number),
                     updated_at = NOW()
-                RETURNING id, phone, gst_number, approval_status, approval_notes
+                RETURNING id, phone, gst_number, approval_status, approval_notes, application_number
             `,
-            [userId, normalizedPhone, normalizedGstNumber, normalizedCompanyName]
+            [userId, normalizedPhone, normalizedGstNumber, normalizedCompanyName, appNumber]
         );
         const vendor = result.rows[0];
         return res.status(201).json({ message: "Vendor profile saved successfully!", vendor });
@@ -400,6 +402,7 @@ export const completeVendorSetupController = async (req: Request, res: Response)
             return res.status(409).json({ message: "This GST number is already registered with another vendor." });
         }
 
+        const appNumber = `APP-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(1000 + Math.random() * 9000)}`;
         const vendorResult = await client.query(
             `
                 INSERT INTO vendors (
@@ -415,9 +418,10 @@ export const completeVendorSetupController = async (req: Request, res: Response)
                     business_description,
                     approval_status,
                     approval_notes,
+                    application_number,
                     updated_at
                 )
-                VALUES ($1, $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9, $10, 'pending', 'Awaiting admin approval', NOW())
+                VALUES ($1, $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), $7, NULLIF($8, ''), $9, $10, 'pending', 'Awaiting admin approval', $11, NOW())
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     company_name = EXCLUDED.company_name,
@@ -429,8 +433,9 @@ export const completeVendorSetupController = async (req: Request, res: Response)
                     alternative_number = EXCLUDED.alternative_number,
                     designation = EXCLUDED.designation,
                     business_description = EXCLUDED.business_description,
+                    application_number = COALESCE(vendors.application_number, EXCLUDED.application_number),
                     updated_at = NOW()
-                RETURNING id, user_id, company_name, gst_number, gst_certificate_link, business_type, company_website, phone, alternative_number, designation, business_description, approval_status
+                RETURNING id, user_id, company_name, gst_number, gst_certificate_link, business_type, company_website, phone, alternative_number, designation, business_description, approval_status, application_number
             `,
             [
                 userId,
@@ -442,7 +447,8 @@ export const completeVendorSetupController = async (req: Request, res: Response)
                 normalizedPhone,
                 normalizedAlternativeNumber,
                 normalizedDesignation,
-                normalizedBusinessDescription
+                normalizedBusinessDescription,
+                appNumber
             ]
         );
 
@@ -559,6 +565,7 @@ export const getVendorDetailsController = async (req: Request, res: Response): P
                 v.is_approved as vendor_is_approved,
                 v.approval_status as vendor_approval_status,
                 v.approval_notes as vendor_approval_notes,
+                v.application_number as vendor_application_number,
                 v.is_blocked as vendor_is_blocked,
                 a.address as vendor_address,
                 a.city as vendor_city,
@@ -695,6 +702,7 @@ export const getVendorIdStatusController = async (req: Request, res: Response): 
                     u.role,
                     v.id AS vendor_id,
                     v.approval_status,
+                    v.application_number,
                     v.is_active,
                     v.is_blocked
                 FROM users u
@@ -727,6 +735,7 @@ export const getVendorIdStatusController = async (req: Request, res: Response): 
             role: row.role,
             vendor_id: row.vendor_id ?? null,
             approval_status: row.approval_status ?? "pending",
+            application_number: row.application_number ?? null,
             is_active: row.is_active ?? true,
             is_blocked: row.is_blocked ?? false,
         });
