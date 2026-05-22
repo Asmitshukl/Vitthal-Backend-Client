@@ -348,4 +348,9 @@ export function buildAbandonedReminderEmailHtml(payload: AbandonedReminderPayloa
             </body>
             </html>
     `;
-        }
+}
+
+export function buildAbandonedReminderEmailText(payload: AbandonedReminderPayload): string {
+    const items = payload.items.map(item => `- ${item.productName} (Price: ${formatCurrency(item.price)})`).join("\n");
+    return `Hi ${payload.userName},\n\nYour saved items are still available:\n\n${items}\n\nComplete your purchase here: https://vitthal-frontend.vercel.app/cart\n\nQuestions? Contact support@vitthal.com\n\n© ${new Date().getFullYear()} MTWO Group. All rights reserved.`;
+}

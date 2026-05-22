@@ -448,7 +448,7 @@ export const respondClientQuotationController = async (req: Request, res: Respon
             await sendQuotationUpdateEmail({
                 recipientEmail: vendorResult.rows[0].vendor_email,
                 recipientName: vendorResult.rows[0].vendor_name || "Vendor",
-                quotationId: id,
+                quotationId: id as string,
                 status: action === "counter" ? "client_countered" : action === "accept" ? "client_accepted" : "client_rejected",
                 note: note || undefined,
                 reason: reason || undefined,
@@ -681,7 +681,7 @@ export const respondVendorQuotationController = async (req: Request, res: Respon
             await sendQuotationUpdateEmail({
                 recipientEmail: clientResult.rows[0].client_email,
                 recipientName: clientResult.rows[0].client_name || "Client",
-                quotationId: id,
+                quotationId: id as string,
                 status: action === "offer" ? "vendor_offered" : action === "counter" ? "vendor_countered" : "vendor_rejected",
                 note: note || undefined,
                 reason: reason || undefined,
