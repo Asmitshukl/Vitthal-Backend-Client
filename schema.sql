@@ -70,7 +70,10 @@ BEGIN
             'client_rejected',
             'vendor_rejected',
             'cancelled',
-            'expired'
+            'expired',
+            'admin_confirmation_pending',
+            'admin_confirmed',
+            'admin_confirmation_rejected'
         );
     END IF;
 END$$;
@@ -78,7 +81,7 @@ END$$;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quotation_message_action') THEN
-        CREATE TYPE quotation_message_action AS ENUM ('request', 'offer', 'counter', 'accept', 'reject', 'note');
+        CREATE TYPE quotation_message_action AS ENUM ('request', 'offer', 'counter', 'accept', 'reject', 'note', 'admin_confirm_request', 'admin_confirmed', 'admin_rejected');
     END IF;
 END$$;
 
@@ -602,6 +605,12 @@ CREATE TABLE IF NOT EXISTS quotation_requests (
     rejection_reason TEXT,
     order_id UUID,
 
+    -- Admin confirmation fields
+    admin_confirmation_status TEXT,
+    admin_confirmation_message TEXT,
+    admin_confirmed_at TIMESTAMPTZ,
+    admin_user_id UUID,
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -621,8 +630,14 @@ CREATE TABLE IF NOT EXISTS quotation_requests (
         FOREIGN KEY (order_id)
         REFERENCES orders(id)
         ON DELETE SET NULL,
+    CONSTRAINT fk_quotation_requests_admin_user
+        FOREIGN KEY (admin_user_id)
+        REFERENCES users(id)
+        ON DELETE SET NULL,
     CONSTRAINT chk_quotation_offer_by
-        CHECK (current_offer_by IS NULL OR current_offer_by IN ('client', 'vendor'))
+        CHECK (current_offer_by IS NULL OR current_offer_by IN ('client', 'vendor')),
+    CONSTRAINT chk_admin_confirmation_status
+        CHECK (admin_confirmation_status IS NULL OR admin_confirmation_status IN ('pending', 'confirmed', 'rejected'))
 );
 
 CREATE TABLE IF NOT EXISTS quotation_messages (
@@ -646,7 +661,7 @@ CREATE TABLE IF NOT EXISTS quotation_messages (
         REFERENCES users(id)
         ON DELETE CASCADE,
     CONSTRAINT chk_quotation_sender_role
-        CHECK (sender_role IN ('client', 'vendor'))
+        CHECK (sender_role IN ('client', 'vendor', 'admin'))
 );
 
 -- cart_items : 
@@ -920,6 +935,46 @@ CREATE INDEX IF NOT EXISTS idx_quotation_requests_user_id ON quotation_requests(
 CREATE INDEX IF NOT EXISTS idx_quotation_requests_status ON quotation_requests(status);
 CREATE INDEX IF NOT EXISTS idx_quotation_requests_product_id ON quotation_requests(product_id);
 CREATE INDEX IF NOT EXISTS idx_quotation_messages_quotation_id ON quotation_messages(quotation_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_quotation_requests_admin_status ON quotation_requests(admin_confirmation_status) WHERE admin_confirmation_status IS NOT NULL;
+
+-- ================================
+-- NOTIFICATIONS
+-- ================================
+CREATE TABLE IF NOT EXISTS notifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    reference_type TEXT,
+    reference_id UUID,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_notifications_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+    CONSTRAINT chk_notification_type
+        CHECK (type IN (
+            'quotation_request_received',
+            'quotation_offer_received',
+            'quotation_counter_received',
+            'quotation_accepted',
+            'quotation_rejected',
+            'admin_confirmation_sent',
+            'admin_confirmation_accepted',
+            'admin_confirmation_rejected',
+            'general'
+        )),
+    CONSTRAINT chk_notification_reference_type
+        CHECK (reference_type IS NULL OR reference_type IN ('quotation', 'order'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read) WHERE is_read = FALSE;
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_reference ON notifications(reference_type, reference_id);
 
 -- ================================
 -- VENDOR COMMUNICATION & QUOTATIONS

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import pool from "../DbConnect";
 import { sendQuotationRequestEmail, sendQuotationUpdateEmail } from "../helpers/emailService.helper";
+import { createNotification, notifyAllAdmins } from "./Notification.controller";
 
 type QuotationAction = "offer" | "counter" | "accept" | "reject";
 
@@ -155,6 +156,21 @@ export const createQuotationFromCartController = async (req: Request, res: Respo
                     quantity: item.quantity,
                     requestedPrice: item.price_at_added,
                     note: requestNote || undefined,
+                });
+            }
+
+            // Notify the vendor's user about the new quotation request
+            const vendorUserResult = await client.query(
+                `SELECT user_id FROM vendors WHERE id = $1`, [item.vendor_id]
+            );
+            if (vendorUserResult.rows.length) {
+                await createNotification({
+                    userId: vendorUserResult.rows[0].user_id,
+                    type: "quotation_request_received",
+                    title: "New quotation request",
+                    body: `You received a quotation request for ${item.product_name} (${item.quantity} units)`,
+                    referenceType: "quotation",
+                    referenceId: quotationId,
                 });
             }
         }
@@ -455,6 +471,52 @@ export const respondClientQuotationController = async (req: Request, res: Respon
             });
         }
 
+        // --- Notifications ---
+        // Get the vendor's user_id for notification
+        const vendorUserResult = await client.query(
+            `SELECT user_id FROM vendors WHERE id = $1`, [quotation.vendor_id]
+        );
+        const vendorUserId = vendorUserResult.rows[0]?.user_id;
+
+        if (action === "counter" && vendorUserId) {
+            await createNotification({
+                userId: vendorUserId,
+                type: "quotation_counter_received",
+                title: "Client sent a counter offer",
+                body: `Client countered with ₹${offerPrice} × ${offerQuantity}`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        } else if (action === "accept") {
+            if (vendorUserId) {
+                await createNotification({
+                    userId: vendorUserId,
+                    type: "quotation_accepted",
+                    title: "Quotation accepted!",
+                    body: `Client accepted your offer of ₹${quotation.current_offer_price} × ${quotation.current_offer_quantity}`,
+                    referenceType: "quotation",
+                    referenceId: id as string,
+                });
+            }
+            // Notify all admins
+            await notifyAllAdmins({
+                type: "quotation_accepted",
+                title: "Quotation accepted by client",
+                body: `A client accepted a quotation for ₹${quotation.current_offer_price} × ${quotation.current_offer_quantity}. Admin confirmation is required.`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        } else if (action === "reject" && vendorUserId) {
+            await createNotification({
+                userId: vendorUserId,
+                type: "quotation_rejected",
+                title: "Quotation rejected",
+                body: `Client rejected the quotation. Reason: ${reason}`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        }
+
         await client.query("COMMIT");
         return res.status(200).json({ message: "Quotation response saved" });
     } catch (error) {
@@ -688,11 +750,164 @@ export const respondVendorQuotationController = async (req: Request, res: Respon
             });
         }
 
+        // --- Notifications ---
+        if (action === "offer" || action === "counter") {
+            await createNotification({
+                userId: quotation.user_id,
+                type: action === "offer" ? "quotation_offer_received" : "quotation_counter_received",
+                title: action === "offer" ? "Vendor sent an offer" : "Vendor sent a counter offer",
+                body: `Vendor offered ₹${offerPrice} × ${offerQuantity}`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        } else if (action === "reject") {
+            await createNotification({
+                userId: quotation.user_id,
+                type: "quotation_rejected",
+                title: "Vendor rejected the quotation",
+                body: `Vendor rejected your quotation request. Reason: ${reason}`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        }
+
         await client.query("COMMIT");
         return res.status(200).json({ message: "Quotation response saved" });
     } catch (error) {
         await client.query("ROLLBACK");
         console.error("Error responding to vendor quotation:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+export const respondToAdminConfirmationController = async (req: Request, res: Response): Promise<Response> => {
+    const authUser = (req as any).user;
+    if (!authUser?.userId || authUser.role !== "client") {
+        return res.status(403).json({ message: "Only clients can respond to admin confirmations" });
+    }
+
+    const { id } = req.params;
+    const { action, note } = req.body as { action?: string; note?: string };
+
+    if (!id || (action !== "accept" && action !== "reject")) {
+        return res.status(400).json({ message: "Quotation ID and action (accept/reject) are required" });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const quotationResult = await client.query(
+            `SELECT * FROM quotation_requests WHERE id = $1 AND user_id = $2 LIMIT 1`,
+            [id, authUser.userId]
+        );
+
+        if (quotationResult.rows.length === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "Quotation not found" });
+        }
+
+        const quotation = quotationResult.rows[0];
+
+        if (quotation.admin_confirmation_status !== "pending") {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "No pending admin confirmation to respond to" });
+        }
+
+        if (action === "accept") {
+            await client.query(
+                `UPDATE quotation_requests
+                 SET admin_confirmation_status = 'confirmed',
+                     admin_confirmed_at = NOW(),
+                     status = 'admin_confirmed',
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [id]
+            );
+
+            // Update the associated order to confirmed if it exists
+            if (quotation.order_id) {
+                await client.query(
+                    `UPDATE orders SET status = 'processing', updated_at = NOW() WHERE id = $1`,
+                    [quotation.order_id]
+                );
+                await client.query(
+                    `INSERT INTO order_status_history (order_id, status, note, created_at)
+                     VALUES ($1, 'processing', 'Admin confirmation accepted by client', CURRENT_TIMESTAMP)`,
+                    [quotation.order_id]
+                );
+            }
+
+            await client.query(
+                `INSERT INTO quotation_messages (quotation_id, sender_user_id, sender_role, action, note)
+                 VALUES ($1, $2, 'client', 'admin_confirmed', $3)`,
+                [id, authUser.userId, note || null]
+            );
+
+            // Notify admin
+            if (quotation.admin_user_id) {
+                await createNotification({
+                    userId: quotation.admin_user_id,
+                    type: "admin_confirmation_accepted",
+                    title: "Client confirmed the quotation",
+                    body: `Client confirmed admin confirmation for the quotation. The order is now active.`,
+                    referenceType: "quotation",
+                    referenceId: id as string,
+                });
+            }
+            await notifyAllAdmins({
+                type: "admin_confirmation_accepted",
+                title: "Quotation fully confirmed",
+                body: `Client confirmed admin confirmation. Order is now processing.`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+
+        } else {
+            // reject
+            await client.query(
+                `UPDATE quotation_requests
+                 SET admin_confirmation_status = 'rejected',
+                     status = 'admin_confirmation_rejected',
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [id]
+            );
+
+            await client.query(
+                `INSERT INTO quotation_messages (quotation_id, sender_user_id, sender_role, action, note)
+                 VALUES ($1, $2, 'client', 'admin_rejected', $3)`,
+                [id, authUser.userId, note || null]
+            );
+
+            // Notify admin
+            if (quotation.admin_user_id) {
+                await createNotification({
+                    userId: quotation.admin_user_id,
+                    type: "admin_confirmation_rejected",
+                    title: "Client rejected the confirmation",
+                    body: `Client rejected the admin confirmation for the quotation.`,
+                    referenceType: "quotation",
+                    referenceId: id as string,
+                });
+            }
+            await notifyAllAdmins({
+                type: "admin_confirmation_rejected",
+                title: "Quotation confirmation rejected",
+                body: `Client rejected the admin confirmation.`,
+                referenceType: "quotation",
+                referenceId: id as string,
+            });
+        }
+
+        await client.query("COMMIT");
+        return res.status(200).json({ message: `Admin confirmation ${action}ed successfully` });
+    } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("Error responding to admin confirmation:", error);
         return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();

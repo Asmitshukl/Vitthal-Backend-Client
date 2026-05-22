@@ -14,6 +14,7 @@ import wishlistRouter from './Routers/Wishlist.router';
 import orderRouter from './Routers/Order.router';
 import reviewRouter from './Routers/Review.router';
 import quotationRouter from './Routers/Quotation.router';
+import notificationRouter from './Routers/Notification.router';
 import { startAbandonedReminderJob } from './jobs/abandonedReminder.job';
 
 dotenv.config();
@@ -85,6 +86,7 @@ app.use("/api/checkout", checkoutRouter);
 app.use("/api/orders", orderRouter);
 app.use("/api/reviews", reviewRouter);
 app.use("/api/quotations", quotationRouter);
+app.use("/api/notifications", notificationRouter);
 
 // Start the server
 app.listen(PORT, () => {

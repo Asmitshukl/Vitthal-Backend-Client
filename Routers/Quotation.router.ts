@@ -7,7 +7,8 @@ import {
     respondClientQuotationController,
     getVendorQuotationsController,
     getVendorQuotationByIdController,
-    respondVendorQuotationController
+    respondVendorQuotationController,
+    respondToAdminConfirmationController
 } from "../Controllers/Quotation.controller";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
 
@@ -20,6 +21,7 @@ quotationRouter.post("/", createQuotationFromCartController);
 quotationRouter.get("/", getClientQuotationsController);
 quotationRouter.get("/:id", getClientQuotationByIdController);
 quotationRouter.post("/:id/respond", respondClientQuotationController);
+quotationRouter.post("/:id/admin-confirm-respond", respondToAdminConfirmationController);
 
 // Vendor routes
 quotationRouter.get("/vendor/list", requireApprovedVendor, getVendorQuotationsController);
