@@ -91,7 +91,61 @@ async function getVendorAllowedCategories(userId: string) {
         [userId]
     );
 
-    return categoryResult.rows as Array<{ code: string; label: string }>;
+    if (categoryResult.rows.length > 0) {
+        return categoryResult.rows as Array<{ code: string; label: string }>;
+    }
+
+    const fallbackResult = await pool.query(
+        `
+            SELECT code, label
+            FROM product_category
+            WHERE is_active = TRUE
+            ORDER BY sort_order ASC, label ASC
+        `
+    );
+
+    return fallbackResult.rows as Array<{ code: string; label: string }>;
+}
+
+async function resolveCategoryId(rawCategory: string) {
+    const normalizedCategory = rawCategory.trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    if (uuidRegex.test(normalizedCategory)) {
+        const byIdResult = await pool.query(
+            `
+                SELECT id
+                FROM product_category
+                WHERE id = $1
+                  AND is_active = TRUE
+                LIMIT 1
+            `,
+            [normalizedCategory]
+        );
+
+        if (!byIdResult.rows.length) {
+            throw new Error("Selected category is invalid.");
+        }
+
+        return byIdResult.rows[0].id as string;
+    }
+
+    const byCodeResult = await pool.query(
+        `
+            SELECT id
+            FROM product_category
+            WHERE LOWER(code) = LOWER($1)
+              AND is_active = TRUE
+            LIMIT 1
+        `,
+        [normalizedCategory]
+    );
+
+    if (!byCodeResult.rows.length) {
+        throw new Error("Selected category is invalid.");
+    }
+
+    return byCodeResult.rows[0].id as string;
 }
 
 async function getApprovedVendorProfile(userId: string) {
@@ -174,6 +228,7 @@ export const addProductController = async (req: Request, res: Response): Promise
 
     try {
         const approvalStatus = actsAsVendor ? "pending" : "approved";
+        const resolvedCategoryId = await resolveCategoryId(String(category));
         await client.query("BEGIN");
 
         const query = `
@@ -192,7 +247,7 @@ export const addProductController = async (req: Request, res: Response): Promise
         const values = [
             name,
             description,
-            category,
+            resolvedCategoryId,
             productType,
             approvalStatus,
             userId,

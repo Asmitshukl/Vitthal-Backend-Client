@@ -64,18 +64,6 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-//database connection
-pool.connect()
-    .then(() => console.log('Connected to the database successfully!'))
-    .catch((err) => console.error('Database connection error:', err.stack));
-
-void ensureMarketplaceSchema().catch((error) => {
-    console.error("Failed to ensure marketplace schema:", error);
-});
-
-startAbandonedReminderJob();
-
-// Define routes
 app.use("/api/auth", authRouter);
 app.use("/api/products", productRouter);
 app.use("/api/vendors", vendorsRouter);
@@ -88,7 +76,24 @@ app.use("/api/reviews", reviewRouter);
 app.use("/api/quotations", quotationRouter);
 app.use("/api/notifications", notificationRouter);
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}🚀🚀`);
-})
+async function startServer() {
+    try {
+        await pool.connect()
+            .then((client) => {
+                client.release();
+                console.log('Connected to the database successfully!');
+            });
+
+        await ensureMarketplaceSchema();
+        startAbandonedReminderJob();
+
+        app.listen(PORT, () => {
+            console.log(`Server is running on port ${PORT}🚀🚀`);
+        });
+    } catch (error) {
+        console.error("Failed to start backend client server:", error);
+        process.exit(1);
+    }
+}
+
+void startServer();
