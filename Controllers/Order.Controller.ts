@@ -353,7 +353,8 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
         return res.status(403).json({ message: "Only vendors can update order status" });
     }
 
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     const { status } = req.body;
 
     if (!id) return res.status(400).json({ message: "Order ID is required" });
@@ -572,7 +573,8 @@ export const getOrderTrackingController = async (req: Request, res: Response): P
         return res.status(403).json({ message: "Only clients can track orders" });
     }
 
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id) return res.status(400).json({ message: "Order ID is required" });
 
     try {
@@ -606,7 +608,8 @@ export const getVendorOrderTrackingController = async (req: Request, res: Respon
         return res.status(403).json({ message: "Only vendors can access vendor order tracking" });
     }
 
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
     if (!id) return res.status(400).json({ message: "Order ID is required" });
 
     try {
