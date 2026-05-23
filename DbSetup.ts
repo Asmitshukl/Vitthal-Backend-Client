@@ -12,6 +12,37 @@ export async function ensureMarketplaceSchema() {
             END IF;
         END $$;
 
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'cart_type') THEN
+                CREATE TYPE cart_type AS ENUM ('direct', 'quotation');
+            END IF;
+        END $$;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quotation_status') THEN
+                CREATE TYPE quotation_status AS ENUM (
+                    'pending_vendor',
+                    'vendor_offered',
+                    'vendor_countered',
+                    'client_countered',
+                    'client_accepted',
+                    'client_rejected',
+                    'vendor_rejected',
+                    'cancelled',
+                    'expired'
+                );
+            END IF;
+        END $$;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'quotation_message_action') THEN
+                CREATE TYPE quotation_message_action AS ENUM ('request', 'offer', 'counter', 'accept', 'reject', 'note');
+            END IF;
+        END $$;
+
         CREATE TABLE IF NOT EXISTS products_images (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             product_id UUID NOT NULL,
@@ -19,6 +50,33 @@ export async function ensureMarketplaceSchema() {
             is_primary BOOLEAN NOT NULL DEFAULT FALSE,
             display_order INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS product_category (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            code TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL,
+            description TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_categories (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            vendor_id UUID NOT NULL,
+            category_id UUID NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT unique_vendor_category_selection UNIQUE (vendor_id, category_id),
+            CONSTRAINT fk_vendor_categories_vendor
+                FOREIGN KEY (vendor_id)
+                REFERENCES vendors(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_vendor_categories_category
+                FOREIGN KEY (category_id)
+                REFERENCES product_category(id)
+                ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS vendor_products (
@@ -29,6 +87,8 @@ export async function ensureMarketplaceSchema() {
             moq INTEGER NOT NULL CHECK (moq > 0),
             stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
             commision_percentage INTEGER DEFAULT 0 CHECK (commision_percentage >= 0 AND commision_percentage <= 100),
+            quotation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            quotation_min_qty INTEGER,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -118,6 +178,71 @@ export async function ensureMarketplaceSchema() {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS quotation_requests (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL,
+            vendor_id UUID NOT NULL,
+            product_id UUID NOT NULL,
+            requested_quantity INTEGER NOT NULL CHECK (requested_quantity > 0),
+            requested_price NUMERIC(12,2) CHECK (requested_price >= 0),
+            status quotation_status NOT NULL DEFAULT 'pending_vendor',
+            request_note TEXT,
+            buyer_city TEXT,
+            buyer_state TEXT,
+            buyer_country TEXT,
+            buyer_pincode VARCHAR(6),
+            current_offer_price NUMERIC(12,2) CHECK (current_offer_price >= 0),
+            current_offer_quantity INTEGER CHECK (current_offer_quantity > 0),
+            current_offer_by TEXT,
+            accepted_price NUMERIC(12,2) CHECK (accepted_price >= 0),
+            accepted_quantity INTEGER CHECK (accepted_quantity > 0),
+            rejection_reason TEXT,
+            order_id UUID,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT fk_quotation_requests_user
+                FOREIGN KEY (user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_quotation_requests_vendor
+                FOREIGN KEY (vendor_id)
+                REFERENCES vendors(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_quotation_requests_product
+                FOREIGN KEY (product_id)
+                REFERENCES products(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_quotation_requests_order
+                FOREIGN KEY (order_id)
+                REFERENCES orders(id)
+                ON DELETE SET NULL,
+            CONSTRAINT chk_quotation_offer_by
+                CHECK (current_offer_by IS NULL OR current_offer_by IN ('client', 'vendor'))
+        );
+
+        CREATE TABLE IF NOT EXISTS quotation_messages (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            quotation_id UUID NOT NULL,
+            sender_user_id UUID NOT NULL,
+            sender_role TEXT NOT NULL,
+            action quotation_message_action NOT NULL,
+            offer_price NUMERIC(12,2) CHECK (offer_price >= 0),
+            offer_quantity INTEGER CHECK (offer_quantity > 0),
+            note TEXT,
+            reason TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT fk_quotation_messages_quotation
+                FOREIGN KEY (quotation_id)
+                REFERENCES quotation_requests(id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_quotation_messages_sender
+                FOREIGN KEY (sender_user_id)
+                REFERENCES users(id)
+                ON DELETE CASCADE,
+            CONSTRAINT chk_quotation_sender_role
+                CHECK (sender_role IN ('client', 'vendor'))
+        );
+
         CREATE TABLE IF NOT EXISTS wishlists (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID NOT NULL UNIQUE,
@@ -197,6 +322,7 @@ export async function ensureMarketplaceSchema() {
 
         ALTER TABLE orders
             ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'client',
+            ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'direct',
             ADD COLUMN IF NOT EXISTS order_reference TEXT,
             ADD COLUMN IF NOT EXISTS order_notes TEXT,
             ADD COLUMN IF NOT EXISTS customer_name TEXT,
@@ -206,6 +332,16 @@ export async function ensureMarketplaceSchema() {
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+        ALTER TABLE carts
+            ADD COLUMN IF NOT EXISTS cart_type cart_type NOT NULL DEFAULT 'direct';
+
+        UPDATE carts
+        SET cart_type = 'direct'
+        WHERE cart_type IS NULL;
+
+        ALTER TABLE carts
+            DROP CONSTRAINT IF EXISTS carts_user_id_key;
+
         ALTER TABLE products_images
             ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0,
@@ -214,6 +350,8 @@ export async function ensureMarketplaceSchema() {
         ALTER TABLE vendor_products
             ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 0,
             ADD COLUMN IF NOT EXISTS commision_percentage INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS quotation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS quotation_min_qty INTEGER,
             ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
@@ -225,6 +363,46 @@ export async function ensureMarketplaceSchema() {
         ALTER TABLE client
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'plastic', 'Plastic', 'Polymers, granules, and molded plastic goods', 1, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'plastic');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'metal', 'Metal', 'Steel, aluminium, copper, and alloy products', 2, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'metal');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'chemicals', 'Chemicals', 'Industrial chemicals, additives, and solvents', 3, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'chemicals');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'construction', 'Construction', 'Cement, tiles, bricks, and building materials', 4, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'construction');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'machinery', 'Machinery', 'Industrial equipment, tools, and machine parts', 5, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'machinery');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'packaging', 'Packaging', 'Boxes, containers, films, and packing supplies', 6, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'packaging');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'textiles', 'Textiles', 'Fabrics, yarns, and textile supplies', 7, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'textiles');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'automotive', 'Automotive', 'Vehicle parts and transport components', 8, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'automotive');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'agriculture', 'Agriculture', 'Seeds, fertilizers, and farm inputs', 9, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'agriculture');
+
+        INSERT INTO product_category (code, label, description, sort_order, is_active, created_at, updated_at)
+        SELECT 'electrical', 'Electrical', 'Cables, switches, wiring, and fittings', 10, TRUE, NOW(), NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM product_category WHERE code = 'electrical');
 
         DO $$
         BEGIN
@@ -295,6 +473,10 @@ export async function ensureMarketplaceSchema() {
         END $$;
 
         CREATE INDEX IF NOT EXISTS idx_vendor_products_product_id ON vendor_products(product_id);
+        CREATE INDEX IF NOT EXISTS idx_vendor_categories_vendor_id ON vendor_categories(vendor_id);
+        CREATE INDEX IF NOT EXISTS idx_vendor_categories_category_id ON vendor_categories(category_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_carts_user_type_status
+            ON carts(user_id, cart_type, status);
         CREATE INDEX IF NOT EXISTS idx_products_images_product_id ON products_images(product_id);
         CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
         CREATE INDEX IF NOT EXISTS idx_products_product_type ON products(product_type);
@@ -311,6 +493,11 @@ export async function ensureMarketplaceSchema() {
         CREATE INDEX IF NOT EXISTS idx_vendor_reviews_order_id ON vendor_reviews(order_id);
         CREATE INDEX IF NOT EXISTS idx_vendor_reviews_user_id ON vendor_reviews(user_id);
         CREATE INDEX IF NOT EXISTS idx_vendor_reviews_vendor_id ON vendor_reviews(vendor_id);
+        CREATE INDEX IF NOT EXISTS idx_quotation_requests_vendor_id ON quotation_requests(vendor_id);
+        CREATE INDEX IF NOT EXISTS idx_quotation_requests_user_id ON quotation_requests(user_id);
+        CREATE INDEX IF NOT EXISTS idx_quotation_requests_status ON quotation_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_quotation_requests_product_id ON quotation_requests(product_id);
+        CREATE INDEX IF NOT EXISTS idx_quotation_messages_quotation_id ON quotation_messages(quotation_id, created_at ASC);
 
         UPDATE products
         SET approval_status = 'approved'
