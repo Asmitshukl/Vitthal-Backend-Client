@@ -1065,3 +1065,62 @@ CREATE INDEX IF NOT EXISTS idx_vendor_quotations_reviewed_by_admin_id
     ON vendor_quotations(reviewed_by_admin_id);
 CREATE INDEX IF NOT EXISTS idx_vendor_quotations_status
     ON vendor_quotations(status);
+
+-- ================================
+-- ORDER ROUTE PLAN (2026-05-23)
+-- Stores pre-planned fulfillment center stops for each order
+-- computed via Haversine when vendor accepts (status -> processing).
+-- ================================
+
+CREATE TABLE IF NOT EXISTS order_route_plan (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL,
+    fulfillment_center_id UUID NOT NULL,
+    stop_sequence INTEGER NOT NULL,
+    center_name TEXT NOT NULL,
+    center_city TEXT NOT NULL,
+    center_state TEXT NOT NULL,
+    center_pincode VARCHAR(6),
+    center_latitude DOUBLE PRECISION,
+    center_longitude DOUBLE PRECISION,
+    estimated_arrival TIMESTAMPTZ,
+    actual_arrival TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'upcoming',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    CONSTRAINT fk_orp_order
+        FOREIGN KEY (order_id)
+        REFERENCES orders(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_orp_fc
+        FOREIGN KEY (fulfillment_center_id)
+        REFERENCES fulfillment_centers(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT chk_orp_status
+        CHECK (status IN ('upcoming', 'in_transit', 'arrived', 'departed')),
+
+    CONSTRAINT uq_orp_order_sequence
+        UNIQUE (order_id, stop_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_route_plan_order_id ON order_route_plan(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_route_plan_fc_id ON order_route_plan(fulfillment_center_id);
+CREATE INDEX IF NOT EXISTS idx_order_route_plan_status ON order_route_plan(status);
+
+-- Enhance order_fulfillment_tracking with stop_sequence and location_label
+ALTER TABLE order_fulfillment_tracking
+    ADD COLUMN IF NOT EXISTS stop_sequence INTEGER,
+    ADD COLUMN IF NOT EXISTS location_label TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_oft_order_sequence
+    ON order_fulfillment_tracking(order_id, stop_sequence);
+
+-- Cache vendor location on orders for display
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS vendor_city TEXT,
+    ADD COLUMN IF NOT EXISTS vendor_state TEXT,
+    ADD COLUMN IF NOT EXISTS vendor_latitude DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS vendor_longitude DOUBLE PRECISION;

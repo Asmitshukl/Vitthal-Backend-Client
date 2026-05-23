@@ -1,7 +1,7 @@
 # Email System Documentation
 
 ## Overview
-This email system provides a complete solution for sending templated emails throughout the Vitthal application using **nodemailer**. It includes templates for various scenarios and a centralized email service.
+This email system provides a complete solution for sending templated emails throughout the MTWO application using **nodemailer**. It includes templates for various scenarios and a centralized email service.
 
 ## Installation
 
@@ -22,7 +22,7 @@ EMAIL_SERVICE=gmail
 EMAIL_USER=your-email@gmail.com
 EMAIL_PASSWORD=your-app-specific-password
 EMAIL_FROM=your-email@gmail.com
-EMAIL_REPLY_TO=support@vitthal.com
+EMAIL_REPLY_TO=support@MTWO.com
 ```
 
 ### Step 2: For Gmail Users

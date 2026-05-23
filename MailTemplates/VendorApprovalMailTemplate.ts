@@ -78,8 +78,8 @@ export function buildVendorApprovalEmailHtml(payload: VendorApprovalEmailPayload
                                             <div class="badge">${statusText}</div>
                                             <p style="margin:12px 0 0; font-size:15px;">
                                                 ${isApproved
-                                                    ? "Congratulations! Your MTWO Group vendor account is approved and ready to use."
-                                                    : "Your MTWO Group vendor application was not approved at this time."}
+            ? "Congratulations! Your MTWO Group vendor account is approved and ready to use."
+            : "Your MTWO Group vendor application was not approved at this time."}
                                             </p>
                                         </div>
 
@@ -112,7 +112,7 @@ export function buildVendorApprovalEmailHtml(payload: VendorApprovalEmailPayload
                                 </tr>
                                 <tr>
                                     <td class="footer">
-                                        Need help? Email <a class="link" href="mailto:vendors@vitthal.com">vendors@vitthal.com</a><br />
+                                        Need help? Email <a class="link" href="mailto:vendors@MTWO.com">vendors@MTWO.com</a><br />
                                         © ${new Date().getFullYear()} MTWO Group. All rights reserved.<br />
                                         <a class="link" href="https://vitthal-frontend.vercel.app">Website</a> · <a class="link" href="https://vitthal-frontend.vercel.app/aboutUs">About Us</a>
                                     </td>
@@ -142,8 +142,8 @@ ${statusIcon} Vendor Application ${statusText}
 Company: ${payload.companyName}
 ${payload.applicationNumber ? `Application #: ${payload.applicationNumber}\n` : ""}
 
-${isApproved 
-    ? `Thank you for your application! Your MTWO Group vendor account has been approved and is ready to use.
+${isApproved
+            ? `Thank you for your application! Your MTWO Group vendor account has been approved and is ready to use.
 
 You can now start selling on our B2B marketplace. Here's what you need to do next:
 
@@ -160,9 +160,9 @@ https://vitthal-vendor-frontend.vercel.app/dashboard
 📚 Resources to Help You:
 • Vendor Guidelines: https://vitthal-frontend.vercel.app/aboutUs
 • FAQ & Help Center: https://vitthal-frontend.vercel.app/aboutUs
-• Contact Vendor Support: vendors@vitthal.com
+• Contact Vendor Support: vendors@MTWO.com
 `
-    : `Thank you for applying to become a vendor on MTWO Group. After careful review, your application has not been approved at this time.
+            : `Thank you for applying to become a vendor on MTWO Group. After careful review, your application has not been approved at this time.
 
 ${payload.approvalNotes ? `Feedback on Your Application:
 ${payload.approvalNotes}
@@ -172,11 +172,11 @@ ${payload.approvalNotes}
 What Next?
 If you believe this is an error or would like to reapply, please contact our vendor support team with updated information or clarification. We'd love to work with you!
 
-Contact Vendor Support: vendors@vitthal.com
+Contact Vendor Support: vendors@MTWO.com
 `}
 
 Need Help?
-For any questions regarding your application status or to discuss your vendor account, please reach out to our vendor support team at vendors@vitthal.com
+For any questions regarding your application status or to discuss your vendor account, please reach out to our vendor support team at vendors@MTWO.com
 
 © ${new Date().getFullYear()} MTWO Group. All rights reserved.
     `;

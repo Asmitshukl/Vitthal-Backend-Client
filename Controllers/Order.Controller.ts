@@ -1,6 +1,151 @@
 import type { Request, Response } from "express";
 import pool from "../DbConnect";
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Haversine distance helper — returns km between two lat/lon points
+// ──────────────────────────────────────────────────────────────────────────────
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371;
+    const toRad = (v: number) => (v * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Route planner: picks FCs that lie "on the corridor" between seller & buyer,
+// then sorts them by ascending distance from the seller.
+// Detour factor 1.4 = FC is accepted if it adds at most 40% extra distance.
+// ──────────────────────────────────────────────────────────────────────────────
+interface FcRow {
+    id: string;
+    name: string;
+    city: string;
+    state: string;
+    pincode: string;
+    latitude: number;
+    longitude: number;
+}
+
+function computeRouteStops(
+    sellerLat: number,
+    sellerLon: number,
+    buyerLat: number,
+    buyerLon: number,
+    allFcs: FcRow[],
+    detourFactor = 1.4
+): (FcRow & { distFromSeller: number; estimatedDays: number })[] {
+    const directKm = haversineKm(sellerLat, sellerLon, buyerLat, buyerLon);
+
+    const onRoute = allFcs
+        .filter((fc) => {
+            if (!fc.latitude || !fc.longitude) return false;
+            const viaFc =
+                haversineKm(sellerLat, sellerLon, fc.latitude, fc.longitude) +
+                haversineKm(fc.latitude, fc.longitude, buyerLat, buyerLon);
+            return viaFc <= directKm * detourFactor;
+        })
+        .map((fc) => ({
+            ...fc,
+            distFromSeller: haversineKm(sellerLat, sellerLon, fc.latitude, fc.longitude),
+            // Simple ETA: 1 day per 400 km, minimum 1 day
+            estimatedDays: Math.max(1, Math.ceil(haversineKm(sellerLat, sellerLon, fc.latitude, fc.longitude) / 400)),
+        }))
+        .sort((a, b) => a.distFromSeller - b.distFromSeller);
+
+    return onRoute;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Generate route plan and save to DB
+// ──────────────────────────────────────────────────────────────────────────────
+async function generateAndSaveRoutePlan(orderId: string): Promise<void> {
+    // 1. Get the order's destination + vendor info
+    const orderQ = await pool.query(
+        `SELECT o.vendor_id, o.latitude, o.langitude,
+                CAST(o.latitude AS DOUBLE PRECISION) AS buyer_lat,
+                CAST(o.langitude AS DOUBLE PRECISION) AS buyer_lon,
+                o.city AS buyer_city, o.state AS buyer_state,
+                a.latitude AS vendor_lat, a.longitude AS vendor_lon,
+                a.city AS vendor_city_val, a.state AS vendor_state_val
+         FROM orders o
+         JOIN vendors v ON o.vendor_id = v.id
+         LEFT JOIN addresses a ON a.user_id = v.user_id
+         WHERE o.id = $1`,
+        [orderId]
+    );
+    if (orderQ.rows.length === 0) return;
+    const ord = orderQ.rows[0];
+
+    const sellerLat = parseFloat(ord.vendor_lat) || null;
+    const sellerLon = parseFloat(ord.vendor_lon) || null;
+    const buyerLat  = parseFloat(ord.buyer_lat) || null;
+    const buyerLon  = parseFloat(ord.buyer_lon) || null;
+
+    // Cache vendor location on the order for display
+    await pool.query(
+        `UPDATE orders SET vendor_city = $1, vendor_state = $2, vendor_latitude = $3, vendor_longitude = $4
+         WHERE id = $5`,
+        [ord.vendor_city_val, ord.vendor_state_val, sellerLat, sellerLon, orderId]
+    );
+
+    // 2. If we don't have both coordinates, skip route generation
+    if (!sellerLat || !sellerLon || !buyerLat || !buyerLon) return;
+
+    // 3. Get all active fulfillment centers
+    const fcQ = await pool.query(
+        `SELECT id, name, city, state, pincode, latitude, longitude
+         FROM fulfillment_centers
+         WHERE is_active = TRUE AND latitude IS NOT NULL AND longitude IS NOT NULL`
+    );
+    const allFcs: FcRow[] = fcQ.rows;
+
+    // 4. Compute route
+    const routeStops = computeRouteStops(sellerLat, sellerLon, buyerLat, buyerLon, allFcs);
+
+    // 5. Delete any existing route plan for this order (idempotent)
+    await pool.query(`DELETE FROM order_route_plan WHERE order_id = $1`, [orderId]);
+
+    // 6. Insert planned stops
+    if (routeStops.length === 0) return; // direct delivery, no FCs on route
+
+    const orderAcceptedAt = new Date();
+    for (let i = 0; i < routeStops.length; i++) {
+        const stop = routeStops[i];
+        // Compute cumulative days from order acceptance for estimated arrival
+        const cumulativeDays = routeStops
+            .slice(0, i + 1)
+            .reduce((sum, s) => sum + s.estimatedDays, 0);
+        const estimatedArrival = new Date(orderAcceptedAt.getTime() + cumulativeDays * 86400000);
+
+        await pool.query(
+            `INSERT INTO order_route_plan
+             (order_id, fulfillment_center_id, stop_sequence, center_name, center_city, center_state,
+              center_pincode, center_latitude, center_longitude, estimated_arrival, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'upcoming')`,
+            [
+                orderId,
+                stop.id,
+                i + 1,
+                stop.name,
+                stop.city,
+                stop.state,
+                stop.pincode,
+                stop.latitude,
+                stop.longitude,
+                estimatedArrival.toISOString(),
+            ]
+        );
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Controllers
+// ══════════════════════════════════════════════════════════════════════════════
+
 export const getOrdersController = async (req: Request, res: Response): Promise<Response> => {
     const authUser = (req as any).user;
     if (!authUser?.userId || !authUser?.role) {
@@ -62,10 +207,7 @@ export const getVendorOrdersController = async (req: Request, res: Response): Pr
     }
 
     try {
-        // First get the vendor_id from the user_id
-        const vendorQuery = `
-            SELECT id FROM vendors WHERE user_id = $1;
-        `;
+        const vendorQuery = `SELECT id FROM vendors WHERE user_id = $1;`;
         const vendorResult = await pool.query(vendorQuery, [userId]);
         
         if (vendorResult.rows.length === 0) {
@@ -74,7 +216,6 @@ export const getVendorOrdersController = async (req: Request, res: Response): Pr
 
         const vendorId = vendorResult.rows[0].id;
 
-        // Fetch orders for this vendor
         const query = `
             SELECT 
                 o.id AS order_id,
@@ -135,10 +276,7 @@ export const getVendorOrderByIdController = async (req: Request, res: Response):
     }
 
     try {
-        // First get the vendor_id from the user_id
-        const vendorQuery = `
-            SELECT id FROM vendors WHERE user_id = $1;
-        `;
+        const vendorQuery = `SELECT id FROM vendors WHERE user_id = $1;`;
         const vendorResult = await pool.query(vendorQuery, [userId]);
         
         if (vendorResult.rows.length === 0) {
@@ -147,7 +285,6 @@ export const getVendorOrderByIdController = async (req: Request, res: Response):
 
         const vendorId = vendorResult.rows[0].id;
 
-        // Fetch specific order for this vendor
         const query = `
             SELECT 
                 o.id AS order_id,
@@ -163,6 +300,10 @@ export const getVendorOrderByIdController = async (req: Request, res: Response):
                 o.pincode,
                 o.latitude,
                 o.langitude,
+                o.vendor_city,
+                o.vendor_state,
+                o.vendor_latitude,
+                o.vendor_longitude,
                 u.name AS customer_name,
                 u.email AS customer_email,
                 c.phone AS customer_phone,
@@ -215,25 +356,16 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!id) {
-        return res.status(400).json({ message: "Order ID is required" });
-    }
+    if (!id) return res.status(400).json({ message: "Order ID is required" });
+    if (!status) return res.status(400).json({ message: "Status is required" });
 
-    if (!status) {
-        return res.status(400).json({ message: "Status is required" });
-    }
-
-    // Validate status
     const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded', 'handed_over', 'received', 'dispatched'];
     if (!validStatuses.includes(status.toLowerCase())) {
         return res.status(400).json({ message: "Invalid status" });
     }
 
     try {
-        // First get the vendor_id from the user_id
-        const vendorQuery = `
-            SELECT id FROM vendors WHERE user_id = $1;
-        `;
+        const vendorQuery = `SELECT id FROM vendors WHERE user_id = $1;`;
         const vendorResult = await pool.query(vendorQuery, [userId]);
         
         if (vendorResult.rows.length === 0) {
@@ -242,10 +374,7 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
 
         const vendorId = vendorResult.rows[0].id;
 
-        // Check if order belongs to this vendor
-        const orderCheckQuery = `
-            SELECT id FROM orders WHERE id = $1 AND vendor_id = $2;
-        `;
+        const orderCheckQuery = `SELECT id FROM orders WHERE id = $1 AND vendor_id = $2;`;
         const orderCheckResult = await pool.query(orderCheckQuery, [id, vendorId]);
         
         if (orderCheckResult.rows.length === 0) {
@@ -259,45 +388,49 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
             WHERE id = $2 AND vendor_id = $3
             RETURNING id, status, updated_at;
         `;
-        
         const result = await pool.query(updateQuery, [status.toLowerCase(), id, vendorId]);
         
         if (result.rows.length === 0) {
             return res.status(404).json({ message: "Failed to update order" });
         }
 
-        // Create status history entry for every status change
-        const statusHistoryQuery = `
-            INSERT INTO order_status_history (order_id, status, note, created_at)
-            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-            RETURNING id;
-        `;
-        
+        // Create status history entry
         const statusNotes: Record<string, string> = {
             'pending': 'Order placed by customer',
             'processing': 'Order accepted and being processed by vendor',
             'shipped': 'Order shipped by vendor',
             'delivered': 'Order delivered to customer',
-            'cancelled': 'Order cancelled by vendor'
+            'cancelled': 'Order cancelled by vendor',
         };
-        
-        await pool.query(statusHistoryQuery, [id, status.toLowerCase(), statusNotes[status.toLowerCase()] || `Status updated to ${status} by vendor`]);
+        await pool.query(
+            `INSERT INTO order_status_history (order_id, status, note, created_at)
+             VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
+            [id, status.toLowerCase(), statusNotes[status.toLowerCase()] || `Status updated to ${status} by vendor`]
+        );
 
-        // Create fulfillment tracking entry for processing, shipped, and delivered statuses
+        // Create fulfillment tracking entry
         if (['processing', 'shipped', 'delivered'].includes(status.toLowerCase())) {
-            const fulfillmentQuery = `
-                INSERT INTO order_fulfillment_tracking (order_id, status, note, created_at)
-                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-                RETURNING id;
-            `;
-            
             const fulfillmentNotes: Record<string, string> = {
                 'processing': 'Order accepted and processing started',
                 'shipped': 'Order dispatched from fulfillment center',
-                'delivered': 'Order successfully delivered to customer'
+                'delivered': 'Order successfully delivered to customer',
             };
-            
-            await pool.query(fulfillmentQuery, [id, status.toLowerCase(), fulfillmentNotes[status.toLowerCase()] || `Order ${status} by vendor`]);
+            await pool.query(
+                `INSERT INTO order_fulfillment_tracking (order_id, status, note, created_at)
+                 VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
+                [id, status.toLowerCase(), fulfillmentNotes[status.toLowerCase()] || `Order ${status} by vendor`]
+            );
+        }
+
+        // ── Route plan generation ─────────────────────────────────────────────
+        // When vendor accepts (processing), compute the planned FC route.
+        if (status.toLowerCase() === 'processing') {
+            try {
+                await generateAndSaveRoutePlan(id);
+            } catch (routeErr) {
+                // Non-fatal — tracking still works without a route plan
+                console.warn("Route plan generation failed (non-fatal):", routeErr);
+            }
         }
 
         return res.status(200).json({ 
@@ -308,6 +441,124 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
         console.error("Error updating order status:", error);
         return res.status(500).json({ message: "Internal server error" });
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Shared tracking query helper — returns full tracking data for an order.
+// Used by both client (getOrderTrackingController) and vendor
+// (getVendorOrderTrackingController) so the data shape is identical.
+// ──────────────────────────────────────────────────────────────────────────────
+async function fetchOrderTrackingData(orderId: string) {
+    // Order details
+    const orderQ = await pool.query(
+        `SELECT 
+            o.id AS order_id,
+            o.status,
+            o.payment_status,
+            o.total_amount,
+            o.created_at,
+            o.updated_at,
+            o.address_line,
+            o.city,
+            o.state,
+            o.country,
+            o.pincode,
+            o.latitude,
+            o.langitude,
+            o.order_reference,
+            o.order_notes,
+            o.vendor_city,
+            o.vendor_state,
+            o.vendor_latitude,
+            o.vendor_longitude,
+            v.company_name AS vendor_name,
+            v.id AS vendor_id
+         FROM orders o
+         JOIN vendors v ON o.vendor_id = v.id
+         WHERE o.id = $1`,
+        [orderId]
+    );
+    if (orderQ.rows.length === 0) return null;
+    const order = orderQ.rows[0];
+
+    // Items
+    const itemsQ = await pool.query(
+        `SELECT 
+            oi.product_id,
+            p.name AS product_name,
+            p.description AS product_description,
+            (SELECT image_url FROM products_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1) AS image_url,
+            oi.quantity,
+            oi.price
+         FROM order_items oi
+         JOIN products p ON oi.product_id = p.id
+         WHERE oi.order_id = $1
+         ORDER BY oi.created_at`,
+        [orderId]
+    );
+
+    // Status history
+    const histQ = await pool.query(
+        `SELECT id, status, note, created_at
+         FROM order_status_history
+         WHERE order_id = $1
+         ORDER BY created_at ASC`,
+        [orderId]
+    );
+
+    // Fulfillment tracking with center details
+    const ftQ = await pool.query(
+        `SELECT 
+            oft.id,
+            oft.status AS fulfillment_status,
+            oft.note AS fulfillment_note,
+            oft.created_at AS fulfillment_updated_at,
+            oft.stop_sequence,
+            oft.location_label,
+            fc.id AS center_id,
+            fc.name AS center_name,
+            fc.address AS center_address,
+            fc.city AS center_city,
+            fc.state AS center_state,
+            fc.country AS center_country,
+            fc.pincode AS center_pincode,
+            fc.latitude AS center_latitude,
+            fc.longitude AS center_longitude
+         FROM order_fulfillment_tracking oft
+         LEFT JOIN fulfillment_centers fc ON oft.fulfillment_center_id = fc.id
+         WHERE oft.order_id = $1
+         ORDER BY oft.created_at ASC`,
+        [orderId]
+    );
+
+    // Route plan (planned stops)
+    const routeQ = await pool.query(
+        `SELECT 
+            id,
+            stop_sequence,
+            fulfillment_center_id,
+            center_name,
+            center_city,
+            center_state,
+            center_pincode,
+            center_latitude,
+            center_longitude,
+            estimated_arrival,
+            actual_arrival,
+            status
+         FROM order_route_plan
+         WHERE order_id = $1
+         ORDER BY stop_sequence ASC`,
+        [orderId]
+    );
+
+    return {
+        order,
+        items: itemsQ.rows,
+        statusHistory: histQ.rows,
+        fulfillmentTracking: ftQ.rows,
+        routePlan: routeQ.rows,
+    };
 }
 
 export const getOrderTrackingController = async (req: Request, res: Response): Promise<Response> => {
@@ -322,106 +573,65 @@ export const getOrderTrackingController = async (req: Request, res: Response): P
     }
 
     const { id } = req.params;
-    if (!id) {
-        return res.status(400).json({ message: "Order ID is required" });
-    }
+    if (!id) return res.status(400).json({ message: "Order ID is required" });
 
     try {
-        // Fetch order details ensuring it belongs to this user
-        const orderQuery = `
-            SELECT 
-                o.id AS order_id,
-                o.status,
-                o.payment_status,
-                o.total_amount,
-                o.created_at,
-                o.updated_at,
-                o.address_line,
-                o.city,
-                o.state,
-                o.country,
-                o.pincode,
-                o.latitude,
-                o.langitude,
-                o.order_reference,
-                o.order_notes,
-                v.company_name AS vendor_name,
-                v.id AS vendor_id
-            FROM orders o
-            JOIN vendors v ON o.vendor_id = v.id
-            WHERE o.id = $1 AND o.user_id = $2
-            LIMIT 1;
-        `;
-        const orderResult = await pool.query(orderQuery, [id, userId]);
-
-        if (orderResult.rows.length === 0) {
+        // Verify ownership first
+        const ownerQ = await pool.query(
+            `SELECT id FROM orders WHERE id = $1 AND user_id = $2`,
+            [id, userId]
+        );
+        if (ownerQ.rows.length === 0) {
             return res.status(404).json({ message: "Order not found or access denied" });
         }
 
-        const order = orderResult.rows[0];
+        const data = await fetchOrderTrackingData(id);
+        if (!data) return res.status(404).json({ message: "Order not found" });
 
-        // Fetch order items
-        const itemsQuery = `
-            SELECT 
-                oi.product_id,
-                p.name AS product_name,
-                p.description AS product_description,
-                (SELECT image_url FROM products_images pi WHERE pi.product_id = p.id AND pi.is_primary = true LIMIT 1) AS image_url,
-                oi.quantity,
-                oi.price
-            FROM order_items oi
-            JOIN products p ON oi.product_id = p.id
-            WHERE oi.order_id = $1
-            ORDER BY oi.created_at;
-        `;
-        const itemsResult = await pool.query(itemsQuery, [id]);
-
-        // Fetch order status history
-        const statusHistoryQuery = `
-            SELECT 
-                osh.id,
-                osh.status,
-                osh.note,
-                osh.created_at
-            FROM order_status_history osh
-            WHERE osh.order_id = $1
-            ORDER BY osh.created_at ASC;
-        `;
-        const statusHistoryResult = await pool.query(statusHistoryQuery, [id]);
-
-        // Fetch fulfillment tracking with center details
-        const fulfillmentQuery = `
-            SELECT 
-                oft.id,
-                oft.status AS fulfillment_status,
-                oft.note AS fulfillment_note,
-                oft.created_at AS fulfillment_updated_at,
-                fc.id AS center_id,
-                fc.name AS center_name,
-                fc.address AS center_address,
-                fc.city AS center_city,
-                fc.state AS center_state,
-                fc.country AS center_country,
-                fc.pincode AS center_pincode,
-                fc.latitude AS center_latitude,
-                fc.longitude AS center_longitude
-            FROM order_fulfillment_tracking oft
-            LEFT JOIN fulfillment_centers fc ON oft.fulfillment_center_id = fc.id
-            WHERE oft.order_id = $1
-            ORDER BY oft.created_at ASC;
-        `;
-        const fulfillmentResult = await pool.query(fulfillmentQuery, [id]);
-
-        return res.status(200).json({
-            data: {
-                order,
-                items: itemsResult.rows,
-                statusHistory: statusHistoryResult.rows,
-                fulfillmentTracking: fulfillmentResult.rows,
-            }
-        });
+        return res.status(200).json({ data });
     } catch (error) {
         console.error("Error fetching order tracking:", error);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+}
+
+export const getVendorOrderTrackingController = async (req: Request, res: Response): Promise<Response> => {
+    const authUser = (req as any).user;
+    if (!authUser?.userId || !authUser?.role) {
+        return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { userId, role } = authUser;
+    if (role !== 'vendor') {
+        return res.status(403).json({ message: "Only vendors can access vendor order tracking" });
+    }
+
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ message: "Order ID is required" });
+
+    try {
+        // Resolve vendor id
+        const vendorQ = await pool.query(`SELECT id FROM vendors WHERE user_id = $1`, [userId]);
+        if (vendorQ.rows.length === 0) {
+            return res.status(404).json({ message: "Vendor not found" });
+        }
+        const vendorId = vendorQ.rows[0].id;
+
+        // Verify order belongs to this vendor
+        const ownerQ = await pool.query(
+            `SELECT id FROM orders WHERE id = $1 AND vendor_id = $2`,
+            [id, vendorId]
+        );
+        if (ownerQ.rows.length === 0) {
+            return res.status(404).json({ message: "Order not found or access denied" });
+        }
+
+        const data = await fetchOrderTrackingData(id);
+        if (!data) return res.status(404).json({ message: "Order not found" });
+
+        return res.status(200).json({ data });
+    } catch (error) {
+        console.error("Error fetching vendor order tracking:", error);
         return res.status(500).json({ message: "Internal server error" });
     }
 }

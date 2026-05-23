@@ -158,7 +158,7 @@ export function buildOrderConfirmationEmailHtml(payload: OrderConfirmationPayloa
                                 </tr>
                                 <tr>
                                     <td class="footer">
-                                        Need help? Contact <a class="link" href="mailto:support@vitthal.com">support@vitthal.com</a><br />
+                                        Need help? Contact <a class="link" href="mailto:support@vitthal.com">support@MTWO.com</a><br />
                                         © ${new Date().getFullYear()} MTWO Group. All rights reserved.<br />
                                         <a class="link" href="https://vitthal-frontend.vercel.app">Website</a> · <a class="link" href="https://vitthal-frontend.vercel.app/orders">My Orders</a>
                                     </td>
@@ -231,7 +231,7 @@ TRACK YOUR ORDER:
 https://vitthal-frontend.vercel.app/orders
 
 Questions or Issues?
-If you have any questions about your order or need assistance, please contact our customer support team at support@vitthal.com
+If you have any questions about your order or need assistance, please contact our customer support team at support@MTWO.com
 
 © ${new Date().getFullYear()} MTWO Group. All rights reserved.
     `;

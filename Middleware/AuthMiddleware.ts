@@ -5,24 +5,21 @@ import { COOKIE_OPTIONS } from "../shared/CokkieSetting.shared";
 export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     try {
         const requestFrom = req.headers["x-request-from"];
-        console.log("Auth Middleware: Request from -", requestFrom);
-        if(requestFrom === "client"){
-            console.log("Handling authentication for client request");
+        if (requestFrom === "client") {
             const accessToken = req.cookies.clientAccessToken;
             const refreshToken = req.cookies.clientRefreshToken;
             return handleClientTokens(accessToken, refreshToken, req, res, next);
         }
-        else if(requestFrom === "vendor"){
-            console.log("Handling authentication for vendor request");
+        else if (requestFrom === "vendor") {
             const accessToken = req.cookies.vendorAccessToken;
             const refreshToken = req.cookies.vendorRefreshToken;
             return handleVendorTokens(accessToken, refreshToken, req, res, next);
         }
-        else{
+        else {
             console.log("Invalid 'x-request-from' header value");
             return res.status(400).json({ message: "Bad Request! Missing or invalid 'x-request-from' header." });
         }
-    
+
     } catch (error) {
         console.log("Error verifying tokens:", error);
         return res.status(401).json({ message: "Unauthorized! Failed to verify Tokens." });
@@ -45,15 +42,15 @@ const generateNewAccessToken = (refreshToken: string) => {
 
 
 const handleClientTokens = (accessToken: string, refreshToken: string, req: Request, res: Response, next: NextFunction) => {
-    try{
-        if(accessToken){
+    try {
+        if (accessToken) {
             console.log("Access token found for client");
             const decoded = verifyToken(accessToken, "access");
             (req as any).user = decoded;
             return next();
         }
 
-        if(refreshToken){
+        if (refreshToken) {
             console.log("Access Token is not there, then Refresh token found for client");
             const decoded = verifyToken(refreshToken, "refresh");
             const newAccessToken = generateNewAccessToken(refreshToken);
@@ -69,25 +66,25 @@ const handleClientTokens = (accessToken: string, refreshToken: string, req: Requ
         return res.status(401).json({ message: "Unauthorized! No valid tokens provided." });
 
     }
-    catch(error){
+    catch (error) {
         console.error("Error handling client tokens:", error);
         // Clear cookies when token verification fails (expired/invalid)
-        try { res.clearCookie("clientAccessToken", COOKIE_OPTIONS); } catch {};
-        try { res.clearCookie("clientRefreshToken", COOKIE_OPTIONS); } catch {};
+        try { res.clearCookie("clientAccessToken", COOKIE_OPTIONS); } catch { };
+        try { res.clearCookie("clientRefreshToken", COOKIE_OPTIONS); } catch { };
         return res.status(401).json({ message: "Unauthorized! Failed to handle client tokens." });
     }
 }
 
 const handleVendorTokens = (accessToken: string, refreshToken: string, req: Request, res: Response, next: NextFunction) => {
-    try{
-        if(accessToken){
+    try {
+        if (accessToken) {
             console.log("Access token found for vendor");
             const decoded = verifyToken(accessToken, "access");
             (req as any).user = decoded;
             return next();
         }
 
-        if(refreshToken){
+        if (refreshToken) {
             console.log("Access Token is not there, then Refresh token found for vendor");
             const decoded = verifyToken(refreshToken, "refresh");
             const newAccessToken = generateNewAccessToken(refreshToken);
@@ -97,17 +94,17 @@ const handleVendorTokens = (accessToken: string, refreshToken: string, req: Requ
         }
 
         // No valid tokens found - clear any lingering auth cookies
-        console.log("No valid tokens found for vendor");    
+        console.log("No valid tokens found for vendor");
         res.clearCookie("vendorAccessToken", COOKIE_OPTIONS);
         res.clearCookie("vendorRefreshToken", COOKIE_OPTIONS);
         return res.status(401).json({ message: "Unauthorized! No valid tokens provided." });
 
     }
-    catch(error){
+    catch (error) {
         console.error("Error handling vendor tokens:", error);
         // Clear cookies when token verification fails (expired/invalid)
-        try { res.clearCookie("vendorAccessToken", COOKIE_OPTIONS); } catch {};
-        try { res.clearCookie("vendorRefreshToken", COOKIE_OPTIONS); } catch {};
+        try { res.clearCookie("vendorAccessToken", COOKIE_OPTIONS); } catch { };
+        try { res.clearCookie("vendorRefreshToken", COOKIE_OPTIONS); } catch { };
         return res.status(401).json({ message: "Unauthorized! Failed to handle vendor tokens." });
     }
 }

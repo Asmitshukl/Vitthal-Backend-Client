@@ -335,7 +335,7 @@ export function buildAbandonedReminderEmailHtml(payload: AbandonedReminderPayloa
                                     </tr>
                                     <tr>
                                         <td class="footer">
-                                            Questions? Contact <a class="link" href="mailto:support@vitthal.com">support@vitthal.com</a><br />
+                                            Questions? Contact <a class="link" href="mailto:support@MTWO.com">support@MTWO.com</a><br />
                                             © ${new Date().getFullYear()} MTWO Group. All rights reserved.<br />
                                             <a class="link" href="https://vitthal-frontend.vercel.app">Website</a> · <a class="link" href="https://vitthal-frontend.vercel.app/aboutUs">About Us</a>
                                         </td>

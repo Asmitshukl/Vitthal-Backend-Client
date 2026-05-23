@@ -1,46 +1,46 @@
 type ReminderSourceType = "cart" | "wishlist";
 
 export type ReminderItem = {
-    sourceType: ReminderSourceType;
-    productName: string;
-    productId: string;
-    vendorName?: string | null;
-    price?: number | null;
-    moq?: number | null;
-    quantity?: number | null;
-    imageUrl?: string | null;
-    createdAt: string;
+  sourceType: ReminderSourceType;
+  productName: string;
+  productId: string;
+  vendorName?: string | null;
+  price?: number | null;
+  moq?: number | null;
+  quantity?: number | null;
+  imageUrl?: string | null;
+  createdAt: string;
 };
 
 type ReminderEmailPayload = {
-    userName: string;
-    userEmail: string;
-    items: ReminderItem[];
+  userName: string;
+  userEmail: string;
+  items: ReminderItem[];
 };
 
 function escapeHtml(value: string): string {
-    return value
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function formatCurrency(value?: number | null): string {
-    if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
-        return "Contact supplier";
-    }
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
+    return "Contact supplier";
+  }
 
-    return `₹${value.toLocaleString()}`;
+  return `₹${value.toLocaleString()}`;
 }
 
 function sourceLabel(sourceType: ReminderSourceType): string {
-    return sourceType === "cart" ? "Cart" : "Wishlist";
+  return sourceType === "cart" ? "Cart" : "Wishlist";
 }
 
 export function buildAbandonedReminderEmailHtml(payload: ReminderEmailPayload): string {
-    const itemRows = payload.items.map((item) => `
+  const itemRows = payload.items.map((item) => `
         <tr>
             <td style="padding:16px 0;border-bottom:1px solid #e4e4e7;">
                 <div style="display:flex;gap:16px;align-items:flex-start;">
@@ -63,19 +63,19 @@ export function buildAbandonedReminderEmailHtml(payload: ReminderEmailPayload): 
         </tr>
     `).join("");
 
-    return `
+  return `
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reminder from Vitthal</title>
+    <title>Reminder from MTWO Groups</title>
   </head>
   <body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;color:#18181b;">
     <div style="max-width:720px;margin:0 auto;padding:24px;">
       <div style="background:#ffffff;border:1px solid #e4e4e7;border-radius:20px;overflow:hidden;box-shadow:0 8px 30px rgba(24,24,27,0.06);">
         <div style="padding:28px 28px 20px;background:linear-gradient(135deg,#1d4ed8 0%,#2563eb 100%);color:#ffffff;">
-          <div style="font-size:12px;letter-spacing:0.16em;text-transform:uppercase;font-weight:700;opacity:0.9;">Vitthal Marketplace</div>
+          <div style="font-size:12px;letter-spacing:0.16em;text-transform:uppercase;font-weight:700;opacity:0.9;">MTWO Group Marketplace</div>
           <h1 style="margin:10px 0 0;font-size:28px;line-height:1.2;">You still have items waiting</h1>
           <p style="margin:12px 0 0;font-size:14px;line-height:1.7;opacity:0.95;max-width:560px;">Hi ${escapeHtml(payload.userName)}, this is a mock reminder for products left in your cart or wishlist for more than 24 hours.</p>
         </div>
