@@ -367,8 +367,12 @@ CREATE INDEX IF NOT EXISTS idx_product_specification_status ON product_specifica
 
 CREATE TABLE IF NOT EXISTS addresses(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID UNIQUE NOT NULL,
+    user_id UUID NOT NULL,
     address TEXT NOT NULL,
+    address_line1 TEXT,
+    address_line2 TEXT,
+    landmark TEXT,
+    address_phone TEXT,
     city TEXT NOT NULL,
     state TEXT NOT NULL,
     country TEXT NOT NULL,
@@ -382,6 +386,8 @@ CREATE TABLE IF NOT EXISTS addresses(
         REFERENCES users(id)
         ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses(user_id);
 
 CREATE TABLE IF NOT EXISTS client(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -825,6 +831,13 @@ ALTER TABLE products
     ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Safely alter addresses
+ALTER TABLE addresses
+    ADD COLUMN IF NOT EXISTS address_line1 TEXT,
+    ADD COLUMN IF NOT EXISTS address_line2 TEXT,
+    ADD COLUMN IF NOT EXISTS landmark TEXT,
+    ADD COLUMN IF NOT EXISTS address_phone TEXT;
 
 -- Safely alter vendors
 ALTER TABLE vendors

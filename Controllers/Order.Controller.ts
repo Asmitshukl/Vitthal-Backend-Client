@@ -196,7 +196,6 @@ export const getOrdersController = async (req: Request, res: Response): Promise<
 
 export const getVendorOrdersController = async (req: Request, res: Response): Promise<Response> => {
     const authUser = (req as any).user;
-    console.log("Authenticated user in getVendorOrdersController:", authUser);  
     if (!authUser?.userId || !authUser?.role) {
         return res.status(401).json({ message: "Unauthorized" });
     }
@@ -430,7 +429,9 @@ export const updateOrderStatusController = async (req: Request, res: Response): 
                 await generateAndSaveRoutePlan(id);
             } catch (routeErr) {
                 // Non-fatal — tracking still works without a route plan
-                console.warn("Route plan generation failed (non-fatal):", routeErr);
+                if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+                    console.warn("Route plan generation failed (non-fatal):", routeErr);
+                }
             }
         }
 

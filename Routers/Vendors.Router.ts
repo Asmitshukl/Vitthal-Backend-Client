@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { addVendorController, createVendorAddress, getVendorCategoriesController, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, completeVendorSetupController, getVendorIdStatusController, checkVendorSetupStatus } from "../Controllers/Vendors.Controller";
+import { addVendorController, createVendorAddress, getVendorCategoriesController, getVendorDetailsController, updateVendorAddress, updateVendorBasicDetailsController, completeVendorSetupController, getVendorIdStatusController, checkVendorSetupStatus, lookupPincodeController } from "../Controllers/Vendors.Controller";
 import { getVendorDashboardController, getVendorAnalyticsController } from "../Controllers/VendorDashboard.Controller";
 import { getVendorProductByIdController, updateVendorProductController, deleteVendorProductController } from "../Controllers/Product.controller";
 
@@ -8,6 +8,7 @@ import { authMiddleware } from "../Middleware/AuthMiddleware";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
 
 const vendorsRouter = Router();
+vendorsRouter.get("/pincode/:pincode", lookupPincodeController);
 vendorsRouter.use(authMiddleware);
 
 vendorsRouter.post("/createVendor", addVendorController);

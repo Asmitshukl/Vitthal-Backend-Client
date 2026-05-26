@@ -47,7 +47,7 @@ export const createQuotationFromCartController = async (req: Request, res: Respo
         await client.query("BEGIN");
 
         const addressResult = await client.query(
-            `SELECT city, state, country, pincode FROM addresses WHERE user_id = $1`,
+            `SELECT city, state, country, pincode FROM addresses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
             [userId]
         );
 
@@ -353,7 +353,7 @@ export const respondClientQuotationController = async (req: Request, res: Respon
             }
 
             const addressResult = await client.query(
-                `SELECT * FROM addresses WHERE user_id = $1`,
+                `SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
                 [authUser.userId]
             );
             if (addressResult.rows.length === 0) {

@@ -1,12 +1,19 @@
 import { Router } from "express";
-
-import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, getCategories, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts, getVendorProductByIdController, updateVendorProductController, getVendorProductAnalyticsController, getProductReviewsController } from "../Controllers/Product.controller";
+import multer from "multer";
+import { addProductController, deleteProduct, getAllProducts, getProductById, getProductByName, getProductsByCategory, getCategories, updateProduct, addVendorProductController, getVendorProductsController, addProductSpecificationsController, getRankedVendors, getRelatedProducts, getVendorProductByIdController, updateVendorProductController, getVendorProductAnalyticsController, getProductReviewsController, uploadProductImagesController } from "../Controllers/Product.controller";
 
 import { authMiddleware } from "../Middleware/AuthMiddleware";
 import { requireApprovedVendor } from "../Middleware/VendorApprovalMiddleware";
 
 const productRouter = Router();
 
+// Configure Multer for memory storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB limit
+  },
+});
 // Public routes
 productRouter.get("/getAllProducts", getAllProducts);
 productRouter.get("/getCategories", getCategories);
@@ -28,6 +35,7 @@ productRouter.get("/vendor/product/:productId/reviews", getProductReviewsControl
 productRouter.post("/addProduct", addProductController);
 productRouter.post("/addVendorProduct", addVendorProductController);
 productRouter.post("/addProductSpecifications", addProductSpecificationsController);
+productRouter.post("/uploadProductImages", upload.array("images", 5), uploadProductImagesController);
 productRouter.delete("/deleteProduct", deleteProduct);
 productRouter.put("/updateProduct", updateProduct);
 

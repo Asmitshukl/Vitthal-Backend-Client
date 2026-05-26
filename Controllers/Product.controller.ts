@@ -1,5 +1,14 @@
 import type { Request, Response } from "express";
 import pool from "../DbConnect";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+
+const s3Client = new S3Client({
+    region: (process.env.AWS_REGION || "ap-south-1").trim(),
+    credentials: {
+        accessKeyId: (process.env.AWS_ACCESS_KEY_ID || "").trim(),
+        secretAccessKey: (process.env.AWS_SECRET_ACCESS_KEY || "").trim(),
+    },
+});
 
 const actionTaker = ['super_admin', 'admin', 'vendor'];
 
@@ -268,7 +277,7 @@ export const addProductController = async (req: Request, res: Response): Promise
                         )
                         VALUES ($1, $2, $3, $4, $5)
                     `,
-                        [
+                    [
                         result.rows[0].id,
                         specification.spec_key,
                         specification.spec_value,
@@ -290,7 +299,7 @@ export const addProductController = async (req: Request, res: Response): Promise
         if (error instanceof Error) {
             return res.status(400).json({ message: error.message });
         }
-        console.log("Error while adding Products : ", error);
+        console.error("Error while adding Products : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
     finally {
@@ -353,7 +362,7 @@ export const addVendorProductController = async (req: Request, res: Response): P
         return res.status(201).json({ message: "Vendor product details saved successfully", result: result.rows[0] });
     }
     catch (error) {
-        console.log("Error while saving Vendor Product details : ", error);
+        console.error("Error while saving Vendor Product details : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -427,7 +436,7 @@ export const deleteProduct = async (req: Request, res: Response): Promise<Respon
         return res.status(200).json({ message: "Product deleted successfully", result });
     }
     catch (error) {
-        console.log("Error while deleting Products : ", error);
+        console.error("Error while deleting Products : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -451,7 +460,7 @@ export const updateProduct = async (req: Request, res: Response): Promise<Respon
         return res.status(200).json({ message: "Product updated successfully", result });
     }
     catch (error) {
-        console.log("Error while updating Products : ", error);
+        console.error("Error while updating Products : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -513,7 +522,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
         }
 
         baseQuery += ` ORDER BY p.created_at DESC, p.id ASC LIMIT $${paramCount + 1} OFFSET $${paramCount}`;
-        
+
         // Add category filter join if needed
         let countQueryWithJoin = countQuery;
         if (category && typeof category === 'string' && category.trim() !== '') {
@@ -531,7 +540,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
             `;
             values.splice(values.length - 1, 1); // Remove and re-add category param
         }
-        
+
         const queryValues = [...values, offsetValue, limitValue];
 
         const query = `
@@ -605,7 +614,7 @@ export const getAllProducts = async (req: Request, res: Response): Promise<Respo
         return res.status(200).json({ message: "Products fetched successfully", totalCount, data: result.rows });
     }
     catch (e) {
-        console.log("Error while fetching Products : ", e);
+        console.error("Error while fetching Products : ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -689,7 +698,7 @@ export const getProductById = async (req: Request, res: Response): Promise<Respo
         return res.status(200).json({ message: "Product fetched successfully", data: result.rows[0] });
     }
     catch (e) {
-        console.log("Error while fetching Product by Id : ", e);
+        console.error("Error while fetching Product by Id : ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };
@@ -704,7 +713,7 @@ export const getCategories = async (_req: Request, res: Response): Promise<Respo
         );
         return res.status(200).json({ message: "Categories fetched successfully", data: result.rows });
     } catch (e) {
-        console.log("Error while fetching categories: ", e);
+        console.error("Error while fetching categories: ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };
@@ -838,7 +847,7 @@ export const getProductsByCategory = async (req: Request, res: Response): Promis
         return res.status(200).json({ message: "Products fetched successfully", totalCount, data: result.rows });
     }
     catch (e) {
-        console.log("Error while fetching Product by category : ", e);
+        console.error("Error while fetching Product by category : ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -909,7 +918,7 @@ export const getProductByName = async (req: Request, res: Response): Promise<Res
         return res.status(200).json({ message: "Product fetched successfully", totalCount, data: result.rows });
     }
     catch (e) {
-        console.log("Error while fetching Product by name : ", e);
+        console.error("Error while fetching Product by name : ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -1004,7 +1013,7 @@ export const getVendorProductsController = async (req: Request, res: Response): 
         const result = await pool.query(query, values);
         return res.status(200).json({ message: "Vendor products fetched successfully", data: result.rows });
     } catch (error) {
-        console.log("Error while fetching vendor products : ", error);
+        console.error("Error while fetching vendor products : ", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
@@ -1133,7 +1142,7 @@ export const getRankedVendors = async (req: Request, res: Response): Promise<Res
 
         return res.status(200).json({ message: "Ranked vendors fetched successfully", data: scoredVendors });
     } catch (e) {
-        console.log("Error while ranking vendors : ", e);
+        console.error("Error while ranking vendors : ", e);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };
@@ -1210,9 +1219,9 @@ export const getVendorProductByIdController = async (req: Request, res: Response
             return res.status(404).json({ message: "Product not found or you don't have access to this product." });
         }
 
-        return res.status(200).json({ 
-            message: "Vendor product fetched successfully", 
-            data: result.rows[0] 
+        return res.status(200).json({
+            message: "Vendor product fetched successfully",
+            data: result.rows[0]
         });
     } catch (error) {
         console.error("Error while fetching vendor product:", error);
@@ -1292,9 +1301,9 @@ export const updateVendorProductController = async (req: Request, res: Response)
             productId
         ]);
 
-        return res.status(200).json({ 
-            message: "Vendor product updated successfully", 
-            data: result.rows[0] 
+        return res.status(200).json({
+            message: "Vendor product updated successfully",
+            data: result.rows[0]
         });
     } catch (error) {
         console.error("Error while updating vendor product:", error);
@@ -1487,8 +1496,8 @@ export const getVendorProductAnalyticsController = async (req: Request, res: Res
 
         const recentOrdersResult = await pool.query(recentOrdersQuery, [productId, vendorId]);
 
-        return res.status(200).json({ 
-            message: "Vendor product analytics fetched successfully", 
+        return res.status(200).json({
+            message: "Vendor product analytics fetched successfully",
             data: {
                 ...analytics,
                 monthly_sales: monthlySalesResult.rows,
@@ -1593,8 +1602,8 @@ export const getProductReviewsController = async (req: Request, res: Response): 
 
         const stats = statsResult.rows[0];
 
-        return res.status(200).json({ 
-            message: "Product reviews fetched successfully", 
+        return res.status(200).json({
+            message: "Product reviews fetched successfully",
             data: {
                 reviews: reviewsResult.rows,
                 stats: {
@@ -1683,7 +1692,85 @@ export const getRelatedProducts = async (req: Request, res: Response): Promise<R
         const result = await pool.query(query, [productId]);
         return res.status(200).json({ message: "Related products fetched successfully", data: result.rows });
     } catch (e) {
-        console.log("Error while fetching related products : ", e);
+        console.error("Error while fetching related products : ", e);
+        return res.status(500).json({ message: "Internal Server Error" });
+    }
+};
+
+export const uploadProductImagesController = async (req: Request, res: Response): Promise<Response> => {
+    const { productId } = req.body;
+    const { userId, role } = (req as any).user;
+    const files = req.files as Express.Multer.File[];
+
+    if (!productId) {
+        return res.status(400).json({ message: "Product ID is required" });
+    }
+
+    if (!files || files.length === 0) {
+        return res.status(400).json({ message: "No images provided" });
+    }
+
+    try {
+        const productResult = await pool.query(`SELECT id, approval_status, created_by_user_id FROM products WHERE id = $1`, [productId]);
+        if (productResult.rows.length === 0) {
+            return res.status(404).json({ message: "Product not found." });
+        }
+
+        const isVendor = role === "vendor";
+        const approvalStatus = isVendor ? "pending" : "approved";
+
+        const BUCKET_NAME = process.env.AWS_BUCKET_NAME || "";
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+
+            // Check if product already has a primary image
+            const existingImages = await client.query(`SELECT id FROM products_images WHERE product_id = $1 AND is_primary = true`, [productId]);
+            let hasPrimary = existingImages.rows.length > 0;
+
+            const uploadedImages = [];
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const originalName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
+                const fileName = `products/${productId}/${Date.now()}_${originalName}`;
+
+                const command = new PutObjectCommand({
+                    Bucket: BUCKET_NAME,
+                    Key: fileName,
+                    Body: file.buffer,
+                    ContentType: file.mimetype,
+                });
+
+                await s3Client.send(command);
+
+                const isPrimary = !hasPrimary && i === 0;
+                if (isPrimary) hasPrimary = true;
+
+                const isApproved = !isVendor;
+
+                // Insert into products_images
+                const insertQuery = `
+                    INSERT INTO products_images (product_id, image_url, is_primary, display_order, approval_status, is_approved, created_by_user_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING *
+                `;
+                const fullUrl = `https://${BUCKET_NAME}.s3.${(process.env.AWS_REGION || "ap-south-1").trim()}.amazonaws.com/${fileName}`;
+                const values = [productId, fullUrl, isPrimary, i, approvalStatus, isApproved, userId];
+                const result = await client.query(insertQuery, values);
+                uploadedImages.push(result.rows[0]);
+            }
+
+            await client.query("COMMIT");
+            return res.status(201).json({ message: "Images uploaded successfully", data: uploadedImages });
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error("Error uploading product images:", error);
         return res.status(500).json({ message: "Internal Server Error" });
     }
 };

@@ -82,6 +82,10 @@ export async function registerUser(req: Request, res: Response): Promise<Respons
                 [hashedOTP, expiryTime, existingUser.id]
             );
 
+            if(process.env.Production !== 'true') {
+                console.log(`Generated OTP for ${email}: ${plainOTP} (expires at ${expiryTime.toISOString()})`);
+            }
+
             const emailResult = await sendOTPEmail(name, email, plainOTP, 10);
             if (!emailResult.success) {
                 console.error(`Failed to send OTP email to ${email}:`, emailResult.error);
@@ -105,7 +109,6 @@ export async function registerUser(req: Request, res: Response): Promise<Respons
         const user = result.rows[0];
         // Generate OTP
         const plainOTP = Math.floor(100000 + Math.random() * 900000).toString();
-        console.log(`Generated OTP for ${email}: ${plainOTP}`); // Log OTP for debugging (remove in production)
         const hashedOTP = await bcrypt.hash(plainOTP, 10);
         const expiryTime = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -116,7 +119,7 @@ export async function registerUser(req: Request, res: Response): Promise<Respons
 
         const emailResult = await sendOTPEmail(name, email, plainOTP, 10);
         if (!emailResult.success) {
-            console.error(`Failed to send OTP ḥṅto ${email}:`, emailResult.error);
+            console.error(`Failed to send OTP email to ${email}:`, emailResult.error);
             return res.status(500).json({ message: 'Failed to send OTP email. Please try again.' });
         }
 
@@ -230,6 +233,8 @@ export async function logoutUser(req: Request, res: Response): Promise<Response>
 export const OTPSendingController = async (req: Request, res: Response): Promise<Response> => {
     const { email } = req.body;
 
+    console.log("OTPSendingController invoked", { email });
+
     if (!email) {
         return res.status(400).json({ message: 'Email is required' });
     }
@@ -245,8 +250,6 @@ export const OTPSendingController = async (req: Request, res: Response): Promise
 
         // Generate 6-digit OTP
         const plainOTP = Math.floor(100000 + Math.random() * 900000).toString();
-        console.log(`Generated OTP for ${email}: ${plainOTP}`); // Log OTP for debugging (remove in production)
-
         // Hash the OTP
         const hashedOTP = await bcrypt.hash(plainOTP, 10);
 
@@ -259,10 +262,15 @@ export const OTPSendingController = async (req: Request, res: Response): Promise
             [hashedOTP, expiryTime, email]
         );
 
+        console.log(`Generated OTP for ${email}: ${plainOTP} (expires at ${expiryTime.toISOString()})`);
         const emailResult = await sendOTPEmail(user.name, email, plainOTP, 10);
         if (!emailResult.success) {
             console.error(`Failed to send OTP email to ${email}:`, emailResult.error);
             return res.status(500).json({ message: 'Failed to send OTP email. Please try again.' });
+        }
+
+        if (process.env.NODE_ENV !== 'production') {
+            console.log(`OTP for ${email}: ${plainOTP}`);
         }
 
         return res.status(200).json({
@@ -326,8 +334,6 @@ export const OTPVerificationController = async (req: Request, res: Response): Pr
             'UPDATE users SET OTP = NULL, OTP_Expiry = NULL WHERE email = $1',
             [email]
         );
-
-        console.log(`OTP verified successfully for ${email}`);
 
         return res.status(200).json({
             message: 'OTP verified successfully',
@@ -656,8 +662,6 @@ export const verifyRegisteredUser = async (req: Request, res: Response): Promise
             } finally {
                 client.release();
             }
-
-        console.log(`User ${email} verified and logged in successfully`);
 
         return res.status(200).json({
             message: 'Email verified successfully. Registration complete.',

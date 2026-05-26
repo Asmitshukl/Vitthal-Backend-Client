@@ -197,7 +197,8 @@ async function processReminderBatch(): Promise<number> {
                 items: group.items,
             });
 
-            console.log("[abandoned-reminder] mock email ready", {
+            if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+                console.log("[abandoned-reminder] mock email ready", {
                 userId,
                 email: group.userEmail,
                 itemCount: group.items.length,
@@ -207,7 +208,8 @@ async function processReminderBatch(): Promise<number> {
                     productName: item.productName,
                 })),
             });
-            console.log("[abandoned-reminder] html preview", html.slice(0, 1200));
+                console.log("[abandoned-reminder] html preview", html.slice(0, 1200));
+            }
 
             for (const item of group.items) {
                 const matchingRow = rows.find((row) => row.user_id === userId && row.product_id === item.productId && row.source_type === item.sourceType);
@@ -241,7 +243,9 @@ export function startAbandonedReminderJob() {
     const runJob = async () => {
         try {
             const processed = await processReminderBatch();
-            console.log(`[abandoned-reminder] batch run complete. rowsProcessed=${processed}`);
+            if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+                console.log(`[abandoned-reminder] batch run complete. rowsProcessed=${processed}`);
+            }
         } catch (error) {
             console.error("[abandoned-reminder] job failed:", error);
         }
@@ -255,5 +259,7 @@ export function startAbandonedReminderJob() {
     });
 
     cronJob.start();
-    console.log(`[abandoned-reminder] cron scheduled with expression ${scheduleExpression}`);
+    if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+        console.log(`[abandoned-reminder] cron scheduled with expression ${scheduleExpression}`);
+    }
 }

@@ -16,7 +16,7 @@ export const placeOrderController = async (req: Request, res: Response): Promise
 
         // 1. Fetch user's address
         const addressQuery = await pool.query(
-            `SELECT * FROM addresses WHERE user_id = $1`,
+            `SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
             [userId]
         );
         if (addressQuery.rows.length === 0) {

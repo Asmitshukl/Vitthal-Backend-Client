@@ -48,7 +48,9 @@ export async function sendEmail(payload: EmailPayload): Promise<EmailResult> {
 
         const info = await transporter.sendMail(mailOptions);
 
-        console.log(`Email sent successfully to ${payload.to}. Message ID: ${info.messageId}`);
+        if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+            console.log(`Email sent successfully to ${payload.to}. Message ID: ${info.messageId}`);
+        }
 
         return {
             success: true,
@@ -98,7 +100,9 @@ export async function verifyEmailConfiguration(): Promise<boolean> {
             return false;
         }
         await transporter.verify();
-        console.log('Email service configured successfully');
+        if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+            console.log('Email service configured successfully');
+        }
         return true;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

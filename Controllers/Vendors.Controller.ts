@@ -25,6 +25,129 @@ function normalizeCategoryCodes(value: unknown) {
         .filter((item) => item.length > 0);
 }
 
+async function fetchPincodeLookup(
+    normalizedPincode: string,
+    signal: AbortSignal,
+) {
+    const response = await fetch(
+        `https://api.zippopotam.us/in/${normalizedPincode}`,
+        {
+            method: "GET",
+            headers: {
+                Accept: "application/json",
+            },
+            signal,
+        },
+    );
+
+    if (!response.ok) {
+        throw new Error(`Postal lookup failed with status ${response.status}`);
+    }
+
+    const data: unknown = await response.json();
+    if (!data || typeof data !== "object") {
+        return null;
+    }
+
+    const places = (data as { places?: Array<{ [key: string]: unknown }> }).places;
+    if (!Array.isArray(places) || places.length === 0) {
+        return null;
+    }
+
+    const formattedPlaces = places
+        .map((place) => {
+            const placeName = typeof place["place name"] === "string" ? place["place name"] : "";
+            const state = typeof place.state === "string" ? place.state : "";
+            const latitude = typeof place.latitude === "string" ? place.latitude : "";
+            const longitude = typeof place.longitude === "string" ? place.longitude : "";
+
+            if (!placeName) {
+                return null;
+            }
+
+            return {
+                city: placeName,
+                state,
+                label: state ? `${placeName}, ${state}` : placeName,
+                latitude,
+                longitude,
+            };
+        })
+        .filter((item): item is { city: string; state: string; label: string; latitude: string; longitude: string } => item !== null);
+
+    if (formattedPlaces.length === 0) {
+        return null;
+    }
+
+    return {
+        pincode: normalizedPincode,
+        city: formattedPlaces[0].city,
+        state: formattedPlaces[0].state,
+        postOfficeName: formattedPlaces[0].city,
+        places: formattedPlaces,
+    };
+}
+
+export const lookupPincodeController = async (req: Request, res: Response): Promise<Response> => {
+    const rawPincode = typeof req.params.pincode === "string" ? req.params.pincode.trim() : "";
+    const normalizedPincode = rawPincode.replace(/\D/g, "");
+
+    if (!/^\d{6}$/.test(normalizedPincode)) {
+        return res.status(400).json({
+            success: false,
+            manualEntryAllowed: true,
+            message: "Pincode must be exactly 6 digits.",
+        });
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+    try {
+        let lookupResult = null as Awaited<ReturnType<typeof fetchPincodeLookup>>;
+
+        try {
+            lookupResult = await fetchPincodeLookup(normalizedPincode, controller.signal);
+        }
+        catch (error) {
+            throw error;
+        }
+
+        if (!lookupResult) {
+            return res.status(404).json({
+                success: false,
+                manualEntryAllowed: true,
+                message: "No location found for this pincode. Please enter city and state manually.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            ...lookupResult,
+        });
+    }
+    catch (error) {
+        const isAbortError = (error as Error).name === "AbortError";
+        if (isAbortError) {
+            return res.status(504).json({
+                success: false,
+                manualEntryAllowed: true,
+                message: "Postal lookup timed out. Please enter city and state manually.",
+            });
+        }
+
+        console.error("Error while looking up pincode:", error);
+        return res.status(502).json({
+            success: false,
+            manualEntryAllowed: true,
+            message: "Postal lookup failed. Please enter city and state manually.",
+        });
+    }
+    finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 export const addVendorController = async (req: Request, res: Response): Promise<Response> => {
     const { companyName, phone, gstNumber } = req.body;
     const { userId } = (req as any).user;
@@ -144,7 +267,7 @@ export const updateVendorBasicDetailsController = async (req: Request, res: Resp
         return res.status(200).json({ message: "Vendor updated successfully!", vendor });
     }
     catch (e) {
-        console.log("Error occurred while updating vendor: ", e);
+        console.error("Error occurred while updating vendor: ", e);
         if ((e as { code?: string }).code === "23505") {
             return res.status(409).json({ message: "GST number is already in use by another vendor." });
         }
@@ -219,7 +342,7 @@ export const createVendorAddress = async (req: Request, res: Response): Promise<
         return res.status(201).json({ message: "Vendor address added successfully!", vendorAddress });
     }
     catch (e) {
-        console.log("Error occurred while adding vendor address: ", e);
+        console.error("Error occurred while adding vendor address: ", e);
         if ((e as { code?: string }).code === "23505") {
             return res.status(409).json({ message: "Address already exists for this vendor. Please update it instead." });
         }
@@ -295,7 +418,7 @@ export const updateVendorAddress = async (req: Request, res: Response): Promise<
         return res.status(200).json({ message: "Vendor address updated successfully!", vendorAddress });
     }
     catch (e) {
-        console.log("Error occurred while updating vendor address: ", e);
+        console.error("Error occurred while updating vendor address: ", e);
         return res.status(500).json({ message: "Error occurred while updating vendor address!" });
     }
 }

@@ -15,6 +15,7 @@ import orderRouter from './Routers/Order.router';
 import reviewRouter from './Routers/Review.router';
 import quotationRouter from './Routers/Quotation.router';
 import notificationRouter from './Routers/Notification.router';
+import uploadRouter from './Routers/Upload.router';
 import { startAbandonedReminderJob } from './jobs/abandonedReminder.job';
 
 dotenv.config();
@@ -52,7 +53,9 @@ app.use("/", cors({
             callback(null, true);
             return;
         }
-        console.log("Blocked CORS origin:", origin);
+        if (process.env.Production !== 'true' && process.env.NODE_ENV !== 'production') {
+            console.log("Blocked CORS origin:", origin);
+        }
 
         return callback(null, false);
     },
@@ -75,6 +78,7 @@ app.use("/api/orders", orderRouter);
 app.use("/api/reviews", reviewRouter);
 app.use("/api/quotations", quotationRouter);
 app.use("/api/notifications", notificationRouter);
+app.use("/api", uploadRouter);
 
 async function startServer() {
     try {
